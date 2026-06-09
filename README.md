@@ -1,5 +1,7 @@
 # hdvmerge
 
+![](screenshot.jpg)
+
 Detect damage in, align, and losslessly merge **overlapping HDV (Sony MPEG-TS)
 tape captures** into one continuous file. When a worn HDV/DV tape reads poorly you
 capture it in several passes — stop, rewind a little, and retry whenever a glitch
