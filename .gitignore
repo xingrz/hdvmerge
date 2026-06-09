@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.venv/
+*.egg-info/
+build/
+dist/
+report.json
+plan.json
+*.part

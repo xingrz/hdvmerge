@@ -1,0 +1,105 @@
+"""Data model.
+
+The only persisted artifact is the per-capture **index** (``<capture>.idx.jsonl``): the
+expensive-to-compute GOP table, cached next to its source and rebuilt only when the source
+content changes. It is JSONL — a meta line followed by one line per GOP — which suits a header
+plus thousands of homogeneous records (greppable, ``wc -l`` ≈ GOP count) and is written with
+sorted keys and no timestamps / absolute paths, so the same source content always yields a
+byte-identical index (idempotent).
+
+Everything else — the cross-capture alignment (:class:`Report`), the byte-range plan
+(:class:`Plan`) and the human report — is cheap to re-derive from the indices and is never
+persisted as a structured file. The merged ``.m2t`` and the Markdown report are the outputs.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional
+import json
+
+INDEX_VERSION = 1
+
+# A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec
+
+
+@dataclass
+class FileIndex:
+    tag: str                       # source basename (no directory) — keeps the index portable
+    size: int
+    fingerprint: str               # content signature for idempotent change detection
+    video_pid: int
+    aux_pid: Optional[int]
+    fps: float
+    decoded: bool                  # whether the ffmpeg decode pass has filled `dec`
+    gops: list = field(default_factory=list)
+
+    @property
+    def path_hint(self):
+        return self.tag
+
+
+def index_path(source_path):
+    return source_path + ".idx.jsonl"
+
+
+def save_index(idx: FileIndex, path):
+    meta = {"v": INDEX_VERSION, "tag": idx.tag, "size": idx.size,
+            "fingerprint": idx.fingerprint, "video_pid": idx.video_pid,
+            "aux_pid": idx.aux_pid, "fps": idx.fps, "decoded": idx.decoded,
+            "ngops": len(idx.gops)}
+    tmp = path + ".part"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(meta, sort_keys=True) + "\n")
+        for g in idx.gops:
+            f.write(json.dumps(g, sort_keys=True) + "\n")
+    import os
+    os.replace(tmp, path)
+
+
+def load_index(path) -> FileIndex:
+    with open(path) as f:
+        meta = json.loads(f.readline())
+        gops = [json.loads(line) for line in f if line.strip()]
+    return FileIndex(tag=meta["tag"], size=meta["size"], fingerprint=meta["fingerprint"],
+                     video_pid=meta["video_pid"], aux_pid=meta["aux_pid"], fps=meta["fps"],
+                     decoded=meta["decoded"], gops=gops)
+
+
+# --- in-memory only (derived fresh from the indices every run) ---
+
+@dataclass
+class Report:
+    sources: list                  # list[FileIndex]
+    chain: list = field(default_factory=list)        # tags in tape order
+    shifts: dict = field(default_factory=dict)        # tag -> axis shift (GOP units)
+    gaps: list = field(default_factory=list)          # [[axis_lo, axis_hi], ...]
+
+    def source(self, tag):
+        for s in self.sources:
+            if s.tag == tag:
+                return s
+        return None
+
+
+@dataclass
+class Segment:
+    tag: str
+    src: str
+    off: int
+    end: int
+    j0: int
+    j1: int
+    ngops: int
+    nbytes: int
+    rec: Optional[str] = None        # recording time of the segment's first GOP
+    rec_end: Optional[str] = None    # recording time of the segment's last GOP
+
+
+@dataclass
+class Plan:
+    segments: list
+    residuals: list = field(default_factory=list)
+    divergences: list = field(default_factory=list)
+    gaps: list = field(default_factory=list)
+    total_frames: int = 0
+    fps: float = 25.0
+    bad_seams: int = 0

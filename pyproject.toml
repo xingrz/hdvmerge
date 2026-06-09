@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hdvmerge"
+version = "0.1.0"
+description = "Detect damage in, align, and losslessly merge overlapping HDV (Sony MPEG-TS) tape captures"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "XiNGRZ" }]
+keywords = ["hdv", "mpeg-ts", "merge", "sony", "m2t", "tape", "recovery", "timecode"]
+classifiers = [
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Recovery Tools",
+    "Programming Language :: Python :: 3",
+]
+# The core needs no third-party packages. ffmpeg is an optional external tool, used only for
+# decode-based damage detection (`scan --decode` / `probe`) — never for the merge, which is
+# byte-level so Sony's private AUX stream survives.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/xingrz/hdvmerge"
+
+[project.scripts]
+hdvmerge = "hdvmerge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hdvmerge"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/hdvmerge", "tests", "docs", "README.md", "AGENTS.md"]
