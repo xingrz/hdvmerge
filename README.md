@@ -17,11 +17,11 @@ damage the transport layer can't see (the decode pass). Detection only — never
 
 ## How it works
 
-HDV/DV capture over FireWire is a **bit-exact** copy of the MPEG-2 stream on the
-tape, so the same tape GOP yields identical compressed bytes in every capture.
-hdvmerge hashes each GOP and uses that hash as a frame-accurate, metadata-free
-coordinate — to find overlaps, to verify every seam is tape-adjacent, and to route
-around damage.
+HDV/DV capture over FireWire copies the tape's MPEG-2 **elementary stream**
+bit-for-bit, so the same tape GOP yields identical compressed video bytes in every
+capture. hdvmerge hashes each GOP's ES and uses that hash as a frame-accurate,
+metadata-free coordinate — to find overlaps, to verify every seam is tape-adjacent,
+and to route around damage.
 
 ```
    overlapping captures (.m2t, read-only)
@@ -35,9 +35,9 @@ around damage.
         ▼
       report the re-capture list: damage with no clean copy, by recording time
         │
-        └─►  with -o   copy the exact byte ranges into one file — byte concatenation,
-                       every stream (incl. the 0xA1 AUX timecode) preserved, a small
-                       discontinuity marker added at each seam.               merged.m2t
+        └─►  with -o   concatenate the byte ranges into one file and re-phase the
+                       continuity counters so it is one seamless stream; every byte of
+                       content (ES, audio, 0xA1 AUX, PCR) preserved. self-checked.  merged.m2t
 ```
 
 Indexing is the only costly work, so it is cached per file next to the capture and reused
@@ -58,7 +58,7 @@ pip install -e .          # provides the `hdvmerge` command
 
 ```sh
 hdvmerge CLIP-*.m2t                    # analyse: index (cached) + print the re-capture list
-hdvmerge CLIP-*.m2t -o merged.m2t      # same, then build the merged file (byte concat + seam markers)
+hdvmerge CLIP-*.m2t -o merged.m2t      # same, then build the merged file (seamless, self-checked)
 ```
 
 The loop: run it to see what needs re-capturing → re-capture those spots → drop the new files in
@@ -71,21 +71,24 @@ PATH; pass `--no-decode` to skip it.
 | Flag | Purpose |
 | --- | --- |
 | `INPUT…` | Capture files or a directory of them. Each is indexed (cached as `<capture>.idx.jsonl`, rebuilt only on change); all are then aligned and the re-capture list is printed. |
-| `-o FILE` | Also build the merged file at `FILE` by byte concatenation (one discontinuity marker inserted per seam; no source byte modified), and write `FILE.report.md` beside it. |
+| `-o FILE` | Also build the merged file at `FILE` (byte concatenation + CC re-phasing, then a self-check), and write `FILE.report.md` beside it. |
 | `--no-decode` | Skip the ffmpeg intra-frame decode detection pass (otherwise on whenever ffmpeg is available; detection only, never affects the merged bytes). |
 | `--index-dir DIR` | Store and read index caches in `DIR` (keyed by file name) instead of beside each capture. |
 | `--no-index` | Don't read or write any index cache; build the index in memory each run. |
 
 ## What you get
 
-- One continuous file from many overlapping captures, cut only at GOP boundaries
-  and joined where the content is provably tape-adjacent (hash-verified seams).
+- One **seamless** file from many overlapping captures, cut only at GOP boundaries
+  and joined where the content is provably tape-adjacent (hash-verified seams). The
+  continuity counters are re-phased so a decoder runs straight through every seam —
+  the result reads back like a single capture.
 - Mid-file damage is routed around automatically wherever an overlapping capture
   has a clean copy of that GOP — including a continuity break that swallowed
   several GOPs, recovered from the other capture.
-- Every source TS byte is preserved (only an AF-only discontinuity marker is added
-  at each seam), so Sony's `0xA1` AUX recording timecode is intact — `merge`
-  self-verifies it is still readable at both ends of the output.
+- Every byte of tape content is preserved (video ES, audio, the `0xA1` AUX timecode,
+  the tape's PCR clock) — only the 4-bit continuity counter is rewritten, and the
+  build self-checks the output (AUX survival + CC/TEI integrity + an ffmpeg decode
+  pass) and fails loudly if anything is off.
 - A **re-capture list**: the exact spots where no capture has a clean copy, each
   labelled with both the camera's real recording time *and* the tape SMPTE timecode
   to cue on the deck (both read from the AUX stream, never extrapolated — the

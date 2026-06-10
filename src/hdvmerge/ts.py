@@ -108,11 +108,11 @@ def with_cc(pkt, new_cc):
 
 def make_disc_marker(pid, cc=0):
     """A 188-byte payload-less TS packet on ``pid`` whose adaptation field sets the
-    ``discontinuity_indicator``. ``build`` inserts one at each seam to signal the (benign) CC
-    discontinuity where two captures meet, so a decoder resets cleanly there and a re-scan does
-    not mistake the splice for packet loss. It is AFC=2 (adaptation-field only): it carries no
-    elementary-stream payload, so it never enters a GOP's ES and never changes a GOP content hash
-    — the marker is purely additive, no source byte is touched."""
+    ``discontinuity_indicator``, telling a decoder to reset its clock/CC tracking cleanly. Clean
+    seams need none (``build`` re-phases CC so they are truly continuous); this is for marking a
+    *real* discontinuity — a gap with no clean copy — so a player handles the unavoidable PCR jump
+    gracefully and a re-scan reads it as signalled, not as packet loss. AFC=2 (adaptation-field
+    only): it carries no ES, so it never enters a GOP's ES or changes a content hash."""
     hdr = bytes([SYNC, (pid >> 8) & 0x1F, pid & 0xFF, 0x20 | (cc & 0x0F)])
     af = bytes([TS - 5, 0x80]) + b"\xFF" * (TS - 6)   # af_length, flags=discontinuity, stuffing
     return hdr + af

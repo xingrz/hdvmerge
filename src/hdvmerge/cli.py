@@ -140,11 +140,22 @@ def cmd_run(args):
     report_path = out + ".report.md"
     with open(report_path, "w") as f:
         f.write(md)
-    ok, info = verifymod.verify(out)
-    print("wrote %s (%.2f GB) and %s — AUX recording timecode %s (head %s / TC %s, tail %s / TC %s)"
-          % (out, os.path.getsize(out) / 1e9, os.path.basename(report_path),
-             "OK" if ok else "MISSING", info.get("rec_head"), info.get("tc_head"),
-             info.get("rec_tail"), info.get("tc_tail")))
+    print("verifying output…", file=sys.stderr)
+    ok, info = verifymod.verify_build(out, plan, decode=decode)
+    print("wrote %s (%.2f GB) and %s" % (out, os.path.getsize(out) / 1e9, os.path.basename(report_path)))
+    print("  AUX timecode %s — head %s / TC %s, tail %s / TC %s"
+          % ("OK" if info.get("rec_head") and info.get("rec_tail") else "MISSING",
+             info.get("rec_head"), info.get("tc_head"), info.get("rec_tail"), info.get("tc_tail")))
+    print("  CC/TEI integrity %s (cc %d/%d, tei %d/%d)"
+          % ("OK" if info.get("cc") == info.get("expected_cc")
+             and info.get("tei") == info.get("expected_tei") else "FAIL",
+             info.get("cc"), info.get("expected_cc"), info.get("tei"), info.get("expected_tei")))
+    if "unexplained_decode" in info:
+        print("  decode integrity %s (%d errors, %d unexplained)"
+              % ("OK" if info["unexplained_decode"] == 0 else "FAIL",
+                 info.get("decode_errors", 0), info["unexplained_decode"]))
+    if not ok:
+        print("error: output self-check FAILED — the merged file may be corrupt", file=sys.stderr)
     return 0 if ok else 1
 
 

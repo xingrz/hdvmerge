@@ -94,10 +94,12 @@ ride in `0xA1` are written empty (`0xff`, auto mode) on the Sony HDV captures in
 ## Why ffmpeg never builds the output
 
 `ffmpeg -c copy` re-muxes and drops unknown private streams, including `0xA1` — the recording
-timecode would be lost. So the merge (`build`) and verification (`verify`) are byte-level work:
-exact source byte ranges copied verbatim, every stream preserved, plus one AF-only
-`discontinuity_indicator` marker inserted at each seam (`ts.make_disc_marker`) to signal the
-capture-relative CC jump there — additive only, no source byte modified, no ES so GOP hashes are
-unchanged. ffmpeg is used in one place only: the decode pass (`probe`) decodes the video to
-*detect* intra-frame damage the TS layer can't reveal — on by default when ffmpeg is on PATH,
-skipped with `--no-decode`. Detection never touches the output bytes.
+timecode would be lost. So the merge (`build`) is byte-level work: every byte that carries tape
+content (the video ES, audio, `0xA1` AUX, the PCR) is copied verbatim, and the only field rewritten
+is the 4-bit `continuity_counter`, re-phased so the join is seamless (the CC is regenerated per
+capture, not tape data — see the AUX section's note that CC differs across captures of one tape
+GOP). After a build, `verify.verify_build` re-scans the output and requires its CC/TEI breaks to
+equal what the plan emitted, the AUX timecode to survive at both ends, and every ffmpeg decode error
+to sit on a known-damaged GOP. ffmpeg is otherwise used in one place only: the decode pass (`probe`)
+decodes the video to *detect* intra-frame damage the TS layer can't reveal — on by default when
+ffmpeg is on PATH, skipped with `--no-decode`. Detection never touches the output bytes.

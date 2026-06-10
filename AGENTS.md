@@ -7,19 +7,24 @@ captures by content, and stitch the good parts into one continuous file.
 
 ## The load-bearing idea
 
-HDV/DV capture over FireWire is a **bit-exact** copy of the tape's MPEG-2 stream, so
-the same tape GOP is byte-identical across captures. Hash each GOP → a frame-accurate,
-metadata-free coordinate. Alignment, overlap detection, and seam-adjacency checks are
-all hash equality; **never** assume "capture's GOP *j* = tape GOP *j* + a fixed offset"
-— a dropped/duplicated GOP (common at damage) shifts that, and the hash-defined seams
-are what make the merge robust to it.
+HDV/DV capture over FireWire copies the tape's MPEG-2 **elementary stream** bit-for-bit, so the
+same tape GOP has byte-identical ES across captures. (The *full* TS bytes are not identical — the
+4-bit continuity_counter is regenerated per capture pass, so two captures of one tape GOP have the
+same ES but different CC.) Hash each GOP's ES → a frame-accurate, metadata-free coordinate.
+Alignment, overlap detection, and seam-adjacency checks are all hash equality; **never** assume
+"capture's GOP *j* = tape GOP *j* + a fixed offset" — a dropped/duplicated GOP (common at damage)
+shifts that, and the hash-defined seams are what make the merge robust to it.
 
 ## The hard constraint
 
 **The merge is byte-level 188-byte TS manipulation; ffmpeg must never build output.** Even
 `ffmpeg -c copy` strips Sony's private AUX stream (`stream_type 0xA1`, usually PID `0x811`),
-which carries the camera recording date/time — only GOP-level byte copying preserves it. After a
-`-o` build, hdvmerge self-checks the AUX timecode is still readable at both ends (`verify.py`).
+which carries the camera recording date/time — only GOP-level byte copying preserves it. Every
+byte that carries tape content — the video ES, audio, the `0xA1` AUX timecode, and the **PCR** (the
+tape's real clock) — is copied verbatim. The *one* field `build` rewrites is the continuity_counter
+(see "Things worth knowing"): it is capture plumbing, not tape data, so re-phasing it to make the
+output seamless loses nothing. After a `-o` build, `verify.verify_build` self-checks the output
+(AUX timecode survival + CC/TEI integrity + an ffmpeg decode pass) — see Invariants.
 
 ffmpeg **is** allowed for *detection only* (the decode pass, on by default whenever ffmpeg is on
 PATH): decoding the video to flag intra-frame damage the TS layer can't see. Third-party Python
@@ -39,7 +44,7 @@ into a build:
 
 ```
 hdvmerge INPUT…              -> indices (cached) + the Markdown re-capture report   (no build)
-hdvmerge INPUT… -o out.m2t   -> same, then build out.m2t (byte concat + seam markers) + report
+hdvmerge INPUT… -o out.m2t   -> same, then build out.m2t (seamless, self-checked) + report
 ```
 
 Internally three stages, exposed as a library rather than separate commands:
@@ -60,7 +65,7 @@ src/hdvmerge/
   scan.py       fingerprint + idempotent per-file index cache + greedy hash alignment -> Report
   probe.py      optional ffmpeg decode-damage detection (detection only, never the merge)
   plan.py       greedy indel-proof walk -> Plan (segments + residuals + divergences)
-  build.py      byte-concat + an AF-only disc marker per seam (the only writer of output bytes)
+  build.py      byte-concat + CC re-phasing (the only writer of output bytes)
   report.py     Plan -> human Markdown report;  verify.py  AUX survival;  cli.py  the command
 tests/  fixtures.py + test_*.py   (synthetic TS, no sample data needed)
 docs/   hdv-internals.md  algorithm.md  formats.md
@@ -88,10 +93,20 @@ are imported everywhere — do not fork copies into the stage modules.
   sibling `iina-dv-timecode` (`src/sources/m2t.ts`).
 - **GOPs are variable length** (~12 frames here). Cut only at GOP boundaries; `gop.py`
   finds them by the `00 00 01 B8` start code.
-- **Open GOPs splice cleanly anyway** — the leading B-frames of a GOP reference the
-  previous GOP's anchor, and because a seam is hash-verified tape-adjacent, that anchor is
-  exactly the preceding segment's last GOP. Only the very first GOP of the whole output
-  loses its 2 leading B-frames (no prior reference); every internal seam is seamless.
+- **CC is capture plumbing, not tape data — `build` re-phases it.** The 4-bit continuity_counter
+  is regenerated per capture pass (proven: two captures of one tape GOP have identical ES but
+  different CC, so a plain concatenation breaks CC at every seam even though the content is
+  tape-adjacent). `build` adds a constant per-PID offset to each segment so CC continues seamlessly
+  across clean seams; a constant offset preserves every internal relationship (payload +1, AF-only
+  unchanged, a residual's real break kept). CC lives in the TS header, not the ES, so GOP hashes are
+  unchanged — a built file re-indexes/re-merges like a raw capture.
+- **Open GOPs splice cleanly, and re-phasing makes the seam truly seamless** — the leading B-frames
+  of a GOP reference the previous GOP's anchor, and because a seam is hash-verified tape-adjacent,
+  that anchor is exactly the preceding segment's last GOP. With CC (and the tape-absolute PCR/PTS)
+  continuous, a decoder runs straight through a seam — no reset, no leading-B-frame failure — so a
+  re-fed merge shows zero continuity breaks and zero decode errors at its own seams (only the very
+  first GOP of the whole output loses its 2 leading B-frames). This is why there are no per-seam
+  markers and no "seam decode over-report" to discount: a clean seam is genuinely not a discontinuity.
 - **A continuity break can swallow several GOPs.** A damaged GOP's bytes are garbage with
   a unique hash; the surrounding clean GOPs still match the other capture. `plan` must
   never pick a damaged candidate when a clean one exists, or it silently drops the good
@@ -110,11 +125,15 @@ are imported everywhere — do not fork copies into the stage modules.
 
 ## Invariants (assert + test)
 
-- Sources are read-only; `build` is the only writer: it copies exact source byte ranges verbatim
-  and inserts one AF-only `discontinuity_indicator` marker (`ts.make_disc_marker`) at each seam. No
-  source byte is ever modified; the marker carries no ES payload, so GOP content hashes are
-  unchanged and a built file re-indexes/re-merges exactly like a raw capture (its own seams read as
-  signalled, not as continuity-break damage).
+- Sources are read-only; `build` is the only writer. It copies every byte that carries tape content
+  verbatim (video ES, audio, `0xA1` AUX, PCR) and rewrites **only** the continuity_counter nibble
+  to re-phase CC across seams. GOP content hashes are unchanged (CC is not in the ES), so a built
+  file re-indexes/re-merges like a raw capture.
+- `build` must catch its own mistakes: after a `-o` build, `verify.verify_build` re-scans the output
+  and asserts its continuity/transport breaks equal what the plan emitted (`plan.emitted_cc/tei` —
+  re-phasing adds none), the AUX timecode survives at both ends, and (with ffmpeg) every decode
+  error sits on a *known* damaged GOP. Any deviation is a hard failure — this is the net for any
+  way our TS handling could be wrong.
 - Every cross-file seam is tape-adjacent: `plan` counts `bad_seams` (must be 0) by checking
   the incoming GOP's predecessor hash equals the outgoing GOP's hash.
 - No silent drop of good content: a damaged GOP is only emitted (as a `residual`) when no
@@ -127,8 +146,8 @@ are imported everywhere — do not fork copies into the stage modules.
 - The only persisted artifact is the per-capture index. Keep it **idempotent**: no mtime, no
   timestamps, no absolute paths in it; `tag` is the basename; serialize with sorted keys. Change
   detection is the content `fingerprint` (size + head/tail hash), never mtime.
-- `build` is the only writer of output bytes and must assert packet alignment, never slide to
-  resync. Re-run `python -m unittest discover` (from the repo root) after touching `ts.py`,
-  `gop.py`, `scan.py`, `plan.py`, or `build.py`.
+- `build` is the only writer of output bytes; it asserts packet alignment (never slides to resync)
+  and may rewrite only the CC nibble, no other byte. Re-run `python -m unittest discover` (from the
+  repo root) after touching `ts.py`, `gop.py`, `scan.py`, `plan.py`, `build.py`, or `verify.py`.
 - Pure-Python packet scanning runs ~300 MB/s — benchmarked at parity with a numpy version, so
   numpy buys nothing here (deps are allowed, this one just isn't worth it).

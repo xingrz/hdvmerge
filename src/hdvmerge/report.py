@@ -110,29 +110,6 @@ def render(plan):
                     _hms(total * GAP_GOP_FRAMES, fps)))
         L.append("")
 
-    # decode flags at seams — listed for transparency but ignorable; they do not change the
-    # re-capture conclusion above (a splice makes ffmpeg's decoder hiccup, it is not tape damage)
-    if plan.seam_flags:
-        sgroups = []
-        for r in plan.seam_flags:
-            if sgroups and r["frame"] - sgroups[-1][-1]["frame"] <= fps * 2:
-                sgroups[-1].append(r)
-            else:
-                sgroups.append([r])
-        L.append("## Decode flags at seams — ignorable (not re-capture)")
-        L.append("")
-        L.append("Re-feeding a merged file, ffmpeg flags a few frames at each splice — a GOP's "
-                 "leading B-frames can't decode across the cut. That is a decoder artifact at the "
-                 "join, **not** tape damage: the frames are intact (the seam is hash-verified "
-                 "tape-adjacent). Listed for transparency; they are not re-capture targets and do "
-                 "not affect the result above.")
-        L.append("")
-        L.append("| recording time | tape TC |")
-        L.append("| --- | --- |")
-        for g in sgroups:
-            L.append("| %s | %s |" % (_time(g[0].get("rec")), _tc(g[0].get("tc"))))
-        L.append("")
-
     # 2) how it was assembled
     L.append("## How it was assembled — %d segment%s, %d seam%s%s"
              % (len(segs), "" if len(segs) == 1 else "s", max(0, len(segs) - 1),

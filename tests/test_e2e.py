@@ -70,20 +70,25 @@ class TestEndToEnd(unittest.TestCase):
 
         out = os.path.join(self.tmp, "merged.m2t")
         buildmod.build(plan, out)
-        self.assertGreaterEqual(len(plan.segments), 2)   # at least one seam exists to mark
-        marker = tsmod.make_disc_marker(plan.video_pid)
+        self.assertGreaterEqual(len(plan.segments), 2)   # at least one seam to re-phase across
+
+        # build re-phases CC and changes NOTHING else: same length, and every byte equals the plain
+        # source concatenation except the continuity-counter nibble (low 4 bits of header byte 3).
         expect = bytearray()
-        for i, sg in enumerate(plan.segments):
-            if i > 0:
-                expect += marker                         # build inserts a disc marker per seam
+        for sg in plan.segments:
             with open(sg.src, "rb") as f:
                 f.seek(sg.off)
                 expect += f.read(sg.end - sg.off)
-        self.assertEqual(_read(out), bytes(expect))      # build = exact source bytes + seam markers
+        got = _read(out)
+        self.assertEqual(len(got), len(expect))          # in-place; no markers, no size change
+        for base in range(0, len(expect), 188):
+            self.assertEqual(got[base:base + 3], bytes(expect[base:base + 3]))        # sync/PID/flags
+            self.assertEqual(got[base + 3] & 0xF0, expect[base + 3] & 0xF0)           # only CC differs
+            self.assertEqual(got[base + 4:base + 188], bytes(expect[base + 4:base + 188]))  # payload
 
         out_idx = scanmod.scan_file(out)
-        self.assertEqual(len(out_idx.gops), 50)          # whole tape, 50 GOPs (markers add none)
-        self.assertEqual(sum(g["cc"] for g in out_idx.gops), 0)  # seam CC jumps are signalled, not flagged
+        self.assertEqual(len(out_idx.gops), 50)          # whole tape, 50 GOPs
+        self.assertEqual(sum(g["cc"] for g in out_idx.gops), 0)  # CC re-phased continuous at the seam
         ok, info = verifymod.verify(out)
         self.assertTrue(ok)
         self.assertTrue(info["rec_head"].startswith("2007-01-01 09:00:0"))
@@ -114,31 +119,39 @@ class TestEndToEnd(unittest.TestCase):
         plan = planmod.build_plan(rep)
         self.assertTrue(any(r["tag"] == "capA" and r.get("dec") for r in plan.residuals))
 
-    def test_decode_overreport_at_seam_is_discounted(self):
-        # Build a merge (markers at the seams), then re-feed it as a single source. A decode
-        # over-report landing on a seam GOP must NOT become a residual; isolated decode damage
-        # away from any seam still must.
+    def test_rephasing_makes_a_built_merge_reread_seamless(self):
+        # Re-feed a built merge as a single source: re-phasing made CC continuous at the seam, so
+        # the output re-scans with zero continuity breaks (no markers, no residuals).
         rep = scanmod.analyze(self._captures())
         out = self._build(planmod.build_plan(rep))
         idx = scanmod.scan_file(out)
-        idx.src_path = out                                       # scan_file doesn't set it
-        seam_is = [g["i"] for g in idx.gops if g.get("seam")]
-        self.assertTrue(seam_is)                                 # disc markers detected as seams
-        s0 = next(s for s in seam_is if s >= planmod.SEAM_DEC_MARGIN)
-        artifact_g = idx.gops[s0 - 3]                            # over-report lands ~3 GOPs early
-        far_g = next(g for g in idx.gops
-                     if min(abs(g["i"] - s) for s in seam_is) > planmod.SEAM_DEC_MARGIN + 1)
-        self.assertFalse(artifact_g.get("seam"))
-        artifact_g["dec"] = 2
-        far_g["dec"] = 2
-        rep2 = model.Report(sources=[idx], chain=[idx.tag], shifts={idx.tag: 0}, gaps=[])
-        plan2 = planmod.build_plan(rep2)
-        res = {r["gop"] for r in plan2.residuals}
-        seam = {r["gop"] for r in plan2.seam_flags}
-        self.assertNotIn(artifact_g["i"], res)                   # not a re-capture target ...
-        self.assertIn(artifact_g["i"], seam)                     # ... but listed as an ignorable seam flag
-        self.assertIn(far_g["i"], res)                           # genuine single-copy damage kept
-        self.assertNotIn(far_g["i"], seam)
+        self.assertEqual(len(idx.gops), 50)
+        self.assertEqual(sum(g["cc"] for g in idx.gops), 0)      # seamless on re-read
+        self.assertEqual(sum(g["tei"] for g in idx.gops), 0)
+
+    def test_output_self_check(self):
+        rep = scanmod.analyze(self._captures())
+        plan = planmod.build_plan(rep)
+        out = self._build(plan)
+        ok, info = verifymod.verify_build(out, plan, decode=False)   # CC-integrity (no ffmpeg)
+        self.assertTrue(ok)
+        self.assertEqual(info["cc"], info["expected_cc"])
+        self.assertEqual(info["expected_cc"], 0)                     # clean merge -> zero breaks
+
+        # a single corrupted CC nibble (a spurious continuity break) must fail the self-check
+        data = bytearray(_read(out))
+        vp = rep.sources[0].video_pid
+        seen = 0
+        for base in range(0, len(data) - 188, 188):
+            if data[base] == 0x47 and tsmod.pid(data[base:base + 188]) == vp:
+                seen += 1
+                if seen == 5:
+                    data[base + 3] = (data[base + 3] & 0xF0) | ((data[base + 3] + 7) & 0x0F)
+                    break
+        bad = _write(self.tmp, "corrupt.m2t", bytes(data))
+        ok2, info2 = verifymod.verify_build(bad, plan, decode=False)
+        self.assertFalse(ok2)                                        # integrity check catches it
+        self.assertGreater(info2["cc"], info2["expected_cc"])
 
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")

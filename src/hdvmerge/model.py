@@ -17,9 +17,9 @@ from typing import Optional
 import json
 import os
 
-INDEX_VERSION = 3   # v2: per-GOP tape timecode (`tc`); v3: seam flag. Older caches rebuild on load.
+INDEX_VERSION = 4   # v2: tape timecode (`tc`); v4: dropped the seam flag. Older caches rebuild.
 
-# A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec tc seam
+# A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec tc
 
 
 @dataclass
@@ -105,10 +105,10 @@ class Segment:
 class Plan:
     segments: list
     residuals: list = field(default_factory=list)
-    seam_flags: list = field(default_factory=list)  # decode flags at seams (ignorable splice artifacts)
     divergences: list = field(default_factory=list)
     gaps: list = field(default_factory=list)
     total_frames: int = 0
     fps: float = 25.0
     bad_seams: int = 0
-    video_pid: Optional[int] = None   # for build's seam discontinuity markers
+    emitted_cc: int = 0   # continuity breaks within the emitted GOPs — the output self-check's
+    emitted_tei: int = 0  # expected totals (re-phasing must add none at seams)

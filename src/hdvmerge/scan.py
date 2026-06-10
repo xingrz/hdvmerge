@@ -51,7 +51,6 @@ def scan_file(path, on_progress=None):
     aux = []
     last_cc = None
     pending_disc = False     # set by an AF-only video disc marker: the next CC jump is signalled
-    disc_offsets = []        # file offsets of AF-only video disc markers (our seam markers)
     fps = 25.0
     READ = stride * 65536
     with open(path, "rb") as f:
@@ -88,8 +87,7 @@ def scan_file(path, on_progress=None):
                             feed(chunk_off + base, 1 if pusi else 0, payload,
                                  1 if (b1 & 0x80) else 0, cc_err, pts)
                     elif this_disc:
-                        pending_disc = True       # AF-only seam marker; arms the next CC check
-                        disc_offsets.append(chunk_off + base)
+                        pending_disc = True       # AF-only disc marker (e.g. a gap); arms next CC check
                 elif apid is not None and p == apid and (b1 & 0x40):
                     b3 = chunk[base + 3]
                     afc = (b3 >> 4) & 0x3
@@ -107,16 +105,6 @@ def scan_file(path, on_progress=None):
     gops = split.finalize(size)
     for g in gops:
         g["dec"] = 0
-        g["seam"] = 0
-    # Flag the GOP that begins right after each signalled seam (an AF-only disc marker). The decode
-    # pass over-reports at a splice; `plan` discounts the dec-run anchored on these GOPs so a built
-    # file, re-fed as a single source, does not flag its own seams as intra-frame damage.
-    if disc_offsets:
-        goff = [g["off"] for g in gops]
-        for m in disc_offsets:
-            k = bisect.bisect_right(goff, m)
-            if k < len(gops):
-                gops[k]["seam"] = 1
     _attach_rec(gops, aux)
     return FileIndex(tag=os.path.splitext(os.path.basename(path))[0], size=size,
                      fingerprint="", video_pid=vpid, aux_pid=apid, fps=fps,

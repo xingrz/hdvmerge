@@ -52,17 +52,26 @@ and seamless (the planner asserts `bad_seams == 0`).
 - A `residual` is a tape position where *no* capture has a clean copy — it survives into the
   output and is listed with its real recording time as a re-capture target.
 
-## 3. Lossless concatenation (building)
+## 3. Seamless concatenation (building)
 
-`build` copies each segment's exact byte range from the original capture and concatenates them.
-No re-encode, no remux: every TS stream — including Sony's `0xA1` AUX timecode — is preserved
-byte for byte. At each seam the two captures meet with independent, capture-relative continuity
-counters (the video CC jumps even though the PCR/PTS, being tape-absolute, stay continuous), so
-`build` inserts one AF-only `discontinuity_indicator` marker there (`ts.make_disc_marker`). It is
-purely additive — no source byte is touched, and it carries no ES so GOP hashes are unchanged — and
-it makes the splice explicit: a decoder resets cleanly, and re-indexing a built file reads its own
-seams as signalled rather than as continuity-break damage. `verify` confirms the AUX timecode is
-readable at both ends of the result.
+`build` concatenates each segment's byte range and **re-phases the continuity counters**. No
+re-encode, no remux: every byte that carries tape content — the video ES, audio, Sony's `0xA1` AUX
+timecode, the PCR — is copied verbatim.
+
+At each seam the two captures meet with independent, capture-relative CC (the video CC jumps even
+though the tape-absolute PCR/PTS stay continuous). Rather than leave or mark that break, `build`
+adds a constant per-PID offset to the incoming segment so its CC continues from the outgoing one. A
+constant offset preserves every internal relationship (payload packets +1, adaptation-only
+unchanged, a residual's real damage break kept exactly), so the only thing that changes is the
+cross-capture phase that was never tape-faithful. CC lives in the TS header, not the ES, so GOP
+hashes are unchanged and a built file re-indexes/re-merges like a raw capture.
+
+The payoff: CC, PCR and PTS are all continuous at every seam, so a decoder runs straight through (no
+reset, no leading-B-frame failure) and a re-fed merge shows zero continuity breaks and zero decode
+errors at its own seams — it reads back like one capture. After the build, `verify.verify_build`
+self-checks the output: AUX timecode survival, CC/TEI integrity (the output's breaks must equal what
+the plan emitted — re-phasing adds none), and an ffmpeg decode pass whose every error must land on a
+known-damaged GOP. Any deviation fails the build.
 
 ## Why open GOPs still splice cleanly
 
