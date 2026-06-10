@@ -66,6 +66,7 @@ position, never extrapolate.
 
 `ffmpeg -c copy` re-muxes and drops unknown private streams, including `0xA1` — the recording
 timecode would be lost. So the merge (`build`) and verification (`verify`) are pure byte-level
-work: exact byte ranges copied, every stream preserved. ffmpeg is used in one place only, and
-optionally: the `scan --decode` / `probe` pass decodes the video to *detect* intra-frame damage
-the TS layer can't reveal. Detection never touches the output bytes.
+work: exact byte ranges copied, every stream preserved. ffmpeg is used in one place only: the
+decode pass (`probe`) decodes the video to *detect* intra-frame damage the TS layer can't reveal
+— on by default when ffmpeg is on PATH, skipped with `--no-decode`. Detection never touches the
+output bytes.

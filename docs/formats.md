@@ -1,7 +1,8 @@
 # The index format
 
-The only persisted artifact is the per-capture **index**, written next to each source as
-`<capture>.idx.jsonl`. It caches the one expensive computation (the GOP table) so re-running only
+The only persisted artifact is the per-capture **index**, written as `<capture>.idx.jsonl` next
+to each source (or together under `--index-dir DIR`, keyed by file name; `--no-index` skips it and
+indexes in memory). It caches the one expensive computation (the GOP table) so re-running only
 re-indexes files whose content changed. Everything else — alignment, the segment plan, the
 re-capture list — is cheap and re-derived in memory each run, so there is no second on-disk
 schema to learn.
@@ -19,7 +20,7 @@ JSONL: the first line is the meta object, every following line is one GOP record
 {"v":1,"tag":"clip-a","size":1234567890,
  "fingerprint":"1234567890:0123456789abcdef0123456789abcdef",  // size + hash(head+tail); change detection
  "video_pid":2064,"aux_pid":2065,                              // Sony 0xA1 stream, or null
- "fps":25.0,"decoded":false,                                   // `decoded`: has the --decode pass run?
+ "fps":25.0,"decoded":false,                                   // `decoded`: has the decode pass run?
  "ngops":1500}
 
 // one GOP per line thereafter
@@ -33,7 +34,7 @@ JSONL: the first line is the meta object, every following line is one GOP record
  "h":"0123456789abcdef",      // blake2b-8 of the GOP's ES bytes — the alignment key
  "cc":0,                      // TS continuity-counter breaks inside the GOP
  "tei":0,                     // transport_error_indicator packets inside the GOP
- "dec":0,                     // ffmpeg decode errors (0 unless --decode); intra-frame damage
+ "dec":0,                     // ffmpeg decode errors (0 until the decode pass runs); intra-frame damage
  "rec":"2007-01-01 09:00:00"} // recording time (nearest AUX packet), or null
 ```
 
@@ -45,11 +46,11 @@ found, and seams verified tape-adjacent — see [algorithm.md](algorithm.md).
 
 On each run, `hdvmerge` recomputes the source's `fingerprint` (`size:hash(first4MB+last4MB)`) and
 compares it to the value in the index. Match → the index is reused untouched. Mismatch (or a new
-file) → the capture is re-indexed. `--decode` additionally re-runs the decode pass on a cached
-index whose `decoded` is `false`, then sets it `true`.
+file) → the capture is re-indexed. The decode pass additionally re-runs on a cached index whose
+`decoded` is `false`, then sets it `true`.
 
 ## Re-deriving / patching
 
 There is nothing to hand-edit. To patch in a re-capture, drop the new file beside the others and
-re-run `report` or `merge`: only the new file is indexed (its index is created), the patch aligns
-by content hash, and the re-capture list shrinks. To force a rebuild, delete the `.idx.jsonl`.
+re-run `hdvmerge`: only the new file is indexed (its index is created), the patch aligns by
+content hash, and the re-capture list shrinks. To force a rebuild, delete the `.idx.jsonl`.

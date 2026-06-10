@@ -18,32 +18,34 @@ are what make the merge robust to it.
 
 **The merge is byte-level 188-byte TS manipulation; ffmpeg must never build output.** Even
 `ffmpeg -c copy` strips Sony's private AUX stream (`stream_type 0xA1`, usually PID `0x811`),
-which carries the camera recording date/time — only GOP-level byte copying preserves it. After
-building, `merge` self-checks the AUX timecode is still readable at both ends (`verify.py`).
+which carries the camera recording date/time — only GOP-level byte copying preserves it. After a
+`-o` build, hdvmerge self-checks the AUX timecode is still readable at both ends (`verify.py`).
 
-ffmpeg **is** allowed for *detection only* (`--decode`): decoding the video to flag intra-frame
-damage the TS layer can't see. Third-party Python deps are allowed too; the core simply doesn't
-need any (pure-Python scanning is already ~300 MB/s).
+ffmpeg **is** allowed for *detection only* (the decode pass, on by default whenever ffmpeg is on
+PATH): decoding the video to flag intra-frame damage the TS layer can't see. Third-party Python
+deps are allowed too; the core simply doesn't need any (pure-Python scanning is already ~300 MB/s).
 
 ## Architecture
 
-The one expensive step is **indexing**, cached per capture next to it as `<capture>.idx.jsonl`
-and rebuilt only when the file's content changes (idempotent — a content fingerprint, no mtime,
-no timestamps/abs-paths inside, sorted keys). Everything downstream is cheap and re-derived from
-the indices every run, so there is no second persisted artifact — just the indices, the merged
-`.m2t`, and the human Markdown report.
+The one expensive step is **indexing**, cached per capture as `<capture>.idx.jsonl` (beside the
+source, or together under `--index-dir`; `--no-index` skips the cache entirely) and rebuilt only
+when the file's content changes (idempotent — a content fingerprint, no mtime, no timestamps/abs-
+paths inside, sorted keys). Everything downstream is cheap and re-derived from the indices every
+run, so there is no second persisted artifact — just the indices, the merged `.m2t`, and the human
+Markdown report.
 
-Two CLI verbs, named after their artifact; both ensure indices first:
+One command, which always ensures indices first; `-o` is the only thing that escalates analysis
+into a build:
 
 ```
-report INPUT…              -> indices (cached) + the Markdown re-capture report   (no build)
-merge  INPUT… -o out.m2t   -> same, then build out.m2t (pure byte concat) + report beside it
+hdvmerge INPUT…              -> indices (cached) + the Markdown re-capture report   (no build)
+hdvmerge INPUT… -o out.m2t   -> same, then build out.m2t (pure byte concat) + report beside it
 ```
 
-Internally still three stages, but as a library, not separate commands:
+Internally three stages, exposed as a library rather than separate commands:
 `scan.analyze` (index + align) → `plan.build_plan` (greedy walk → segments + residuals +
 divergences) → `build.build` (the ONLY writer of output bytes). `report.render` turns a plan
-into Markdown; `verify.verify` checks AUX survival (used inside `merge`).
+into Markdown; `verify.verify` checks AUX survival (run after a `-o` build).
 
 ## Layout
 
@@ -59,7 +61,7 @@ src/hdvmerge/
   probe.py      optional ffmpeg decode-damage detection (detection only, never the merge)
   plan.py       greedy indel-proof walk -> Plan (segments + residuals + divergences)
   build.py      pure byte-concat (the only writer of output bytes)
-  report.py     Plan -> human Markdown report;  verify.py  AUX survival;  cli.py  report|merge
+  report.py     Plan -> human Markdown report;  verify.py  AUX survival;  cli.py  the command
 tests/  fixtures.py + test_*.py   (synthetic TS, no sample data needed)
 docs/   hdv-internals.md  algorithm.md  formats.md
 ```
@@ -87,8 +89,8 @@ are imported everywhere — do not fork copies into the stage modules.
   GOPs the other capture has (it routes by hash majority / contiguity, preferring clean).
 - **Two clean copies can still disagree.** Intra-frame damage that leaves TS structure
   intact produces a different hash with no continuity break. In an overlap that is a
-  `divergence` (reported for review); in a single-copy region it needs the optional
-  `--decode` pass (ffmpeg) to be seen at all.
+  `divergence` (reported for review); in a single-copy region it needs the decode pass
+  (ffmpeg, on by default) to be seen at all.
 - **The decode pass over-reports.** A decode error cascades from a lost reference onto later,
   byte-clean GOPs (e.g. ffmpeg flagged A#1414 though its bytes equal a clean B copy). Harmless:
   the walk picks by hash, so an identical clean copy wins regardless of the `dec` flag, and only
@@ -107,7 +109,7 @@ are imported everywhere — do not fork copies into the stage modules.
 
 ## When making changes
 
-- ffmpeg may detect (`--decode`) but must never build output; third-party deps are fine but
+- ffmpeg may detect (the decode pass) but must never build output; third-party deps are fine but
   the core needs none.
 - The only persisted artifact is the per-capture index. Keep it **idempotent**: no mtime, no
   timestamps, no absolute paths in it; `tag` is the basename; serialize with sorted keys. Change

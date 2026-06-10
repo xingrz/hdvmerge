@@ -15,6 +15,7 @@ persisted as a structured file. The merged ``.m2t`` and the Markdown report are 
 from dataclasses import dataclass, field
 from typing import Optional
 import json
+import os
 
 INDEX_VERSION = 1
 
@@ -37,7 +38,11 @@ class FileIndex:
         return self.tag
 
 
-def index_path(source_path):
+def index_path(source_path, cache_dir=None):
+    """Where the index cache lives. Beside the capture by default; in ``cache_dir`` (keyed by
+    basename) when one is given, so a directory of indices can sit apart from read-only sources."""
+    if cache_dir:
+        return os.path.join(cache_dir, os.path.basename(source_path) + ".idx.jsonl")
     return source_path + ".idx.jsonl"
 
 
@@ -51,7 +56,6 @@ def save_index(idx: FileIndex, path):
         f.write(json.dumps(meta, sort_keys=True) + "\n")
         for g in idx.gops:
             f.write(json.dumps(g, sort_keys=True) + "\n")
-    import os
     os.replace(tmp, path)
 
 

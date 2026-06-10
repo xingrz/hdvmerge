@@ -41,11 +41,12 @@ and seamless (the planner asserts `bad_seams == 0`).
 ### Damage handling and residuals
 
 - `cc` (continuity break) and `tei` are reliable TS-level damage flags.
-- The optional `--decode` pass decodes the video with ffmpeg and tags GOPs with
-  intra-frame damage (`dec`) the TS layer can't see. ffmpeg is used for this detection only —
-  never to build output. It over-reports (a decode error cascades onto later byte-clean GOPs),
-  but harmlessly: a GOP whose bytes match a clean copy elsewhere is chosen by hash regardless of
-  its `dec` flag, so only genuine single-copy damage becomes a residual.
+- The decode pass decodes the video with ffmpeg (on by default whenever ffmpeg is on PATH;
+  `--no-decode` skips it) and tags GOPs with intra-frame damage (`dec`) the TS layer can't see.
+  ffmpeg is used for this detection only — never to build output. It over-reports (a decode error
+  cascades onto later byte-clean GOPs), but harmlessly: a GOP whose bytes match a clean copy
+  elsewhere is chosen by hash regardless of its `dec` flag, so only genuine single-copy damage
+  becomes a residual.
 - In an **overlap**, two clean copies that hash differently reveal intra-frame damage even
   without decoding → recorded as a `divergence` for review.
 - A `residual` is a tape position where *no* capture has a clean copy — it survives into the
@@ -69,6 +70,7 @@ the very first GOP of the whole output has no prior reference and loses its 2 le
 ## Patching in a re-capture
 
 Re-capture a residual spot (cover ≥15–20 s of good footage on each side so it can anchor), drop
-the file beside the others, and re-run `report` or `merge`. Only the new file is indexed; the
-patch lands by content hash and the re-capture list shrinks. This is why the per-capture index is
-cached and idempotent — the expensive analysis is done once per file, never redone for the rest.
+the file beside the others, and re-run `hdvmerge` (add `-o` once the list is empty to build). Only
+the new file is indexed; the patch lands by content hash and the re-capture list shrinks. This is
+why the per-capture index is cached and idempotent — the expensive analysis is done once per file,
+never redone for the rest.

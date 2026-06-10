@@ -1,15 +1,13 @@
-"""hdvmerge CLI: report | merge.
+"""hdvmerge command line.
 
-Two verbs, named after the two artifacts:
+``hdvmerge INPUT…`` indexes each capture (reusing the cache for unchanged files), aligns them,
+and prints the analysis — above all the re-capture list. Add ``-o FILE`` to also build the merged
+``.m2t`` by pure byte concatenation and write the report beside it.
 
-  report   refresh the per-capture indices (only re-indexing changed files) and print/write the
-           human analysis report — what was found and, above all, the re-capture list.
-  merge    the same analysis, then build the merged .m2t (pure byte concatenation) and write the
-           report beside it.
-
-Indexing is the one expensive step and is cached next to each capture (``<capture>.idx.jsonl``);
-everything else is re-derived cheaply each run. The merge never uses ffmpeg, so Sony's private
-AUX timecode survives; ffmpeg is optional and only powers ``--decode`` damage detection.
+Indexing is the only expensive step and is cached as ``<capture>.idx.jsonl`` — beside the source,
+or together under ``--index-dir`` — while everything else is re-derived each run. The merge is
+byte-level and never invokes ffmpeg, so Sony's private AUX timecode survives. ffmpeg powers the
+intra-frame decode damage pass, which runs whenever ffmpeg is on PATH (``--no-decode`` to skip).
 """
 
 import argparse
@@ -22,6 +20,7 @@ from . import plan as planmod
 from . import build as buildmod
 from . import verify as verifymod
 from . import report as reportmod
+from . import probe as probemod
 
 EXTS = (".m2t", ".m2ts", ".mts", ".ts", ".tts", ".trp", ".tp", ".mpg", ".mpeg")
 _PROGRESS_MIN = 64 * 1024 * 1024
@@ -78,7 +77,7 @@ class _Bar:
         self.shown = -1
 
 
-def _analyse(files, decode):
+def _analyse(files, decode, cache_dir=None, use_cache=True):
     """Ensure indices (cached) and align. Returns (report, plan). Prints per-file status."""
     bar = _Bar("indexing")
 
@@ -99,50 +98,40 @@ def _analyse(files, decode):
         print("  %-22s indexed: %d gops, cc=%d tei=%d%s, %s"
               % (idx.tag, len(idx.gops), cc, tei, extra, span))
 
-    rep = scanmod.analyze(files, decode=decode, on_progress=bar, on_file=on_file)
+    rep = scanmod.analyze(files, decode=decode, cache_dir=cache_dir, use_cache=use_cache,
+                          on_progress=bar, on_file=on_file)
     plan = planmod.build_plan(rep)
     return rep, plan
 
 
-def cmd_report(args):
+def cmd_run(args):
+    """Index, align, and print the re-capture report. With ``-o`` also build the merged ``.m2t``
+    (pure byte concat) and write the report beside it."""
     files = _discover(args.inputs)
     if not files:
         print("error: no capture files found", file=sys.stderr)
         return 2
+    decode = not args.no_decode
+    if decode and not probemod.have_ffmpeg():
+        print("note: ffmpeg not on PATH — skipping intra-frame decode detection "
+              "(TS-level damage detection still runs; pass --no-decode to silence)",
+              file=sys.stderr)
+        decode = False
     try:
-        rep, plan = _analyse(files, args.decode)
-    except RuntimeError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return 2
-    md = reportmod.render(plan)
-    print("\nchain: %s\n" % " -> ".join(rep.chain))
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(md)
-        print(md)
-        print("wrote %s" % args.output)
-    else:
-        print(md)
-    return 0
-
-
-def cmd_merge(args):
-    files = _discover(args.inputs)
-    if not files:
-        print("error: no capture files found", file=sys.stderr)
-        return 2
-    out = args.output
-    try:
-        rep, plan = _analyse(files, args.decode)
+        rep, plan = _analyse(files, decode, cache_dir=args.index_dir,
+                             use_cache=not args.no_index)
     except RuntimeError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
     md = reportmod.render(plan)
     print("\nchain: %s\n" % " -> ".join(rep.chain))
     print(md)
+    if not args.output:
+        return 0
     if plan.bad_seams:
         print("error: %d non-adjacent seam(s); refusing to build" % plan.bad_seams, file=sys.stderr)
         return 1
+    out = args.output
     bar = _Bar("building")
     buildmod.build(plan, out, on_progress=bar)
     bar.done()
@@ -158,27 +147,25 @@ def cmd_merge(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hdvmerge",
-                                 description="Detect damage in, align, and losslessly merge "
-                                             "overlapping HDV tape captures.")
+                                 description="Detect damage in, align, and (with -o) losslessly "
+                                             "merge overlapping HDV tape captures.")
     ap.add_argument("--version", action="version", version="hdvmerge " + __version__)
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("report", help="analyse captures and print/write the re-capture report")
-    p.add_argument("inputs", nargs="+", help="capture files or a directory of them")
-    p.add_argument("-o", "--output", help="also write the report to this Markdown file")
-    p.add_argument("-d", "--decode", action="store_true",
-                   help="run ffmpeg decode detection for intra-frame damage (detection only)")
-    p.set_defaults(func=cmd_report)
-
-    p = sub.add_parser("merge", help="analyse + build the merged file (pure byte concat)")
-    p.add_argument("inputs", nargs="+", help="capture files or a directory of them")
-    p.add_argument("-o", "--output", required=True)
-    p.add_argument("-d", "--decode", action="store_true",
-                   help="run ffmpeg decode detection during indexing (detection only)")
-    p.set_defaults(func=cmd_merge)
+    ap.add_argument("inputs", nargs="+", help="capture files or a directory of them")
+    ap.add_argument("-o", "--output", metavar="FILE",
+                    help="build the merged .m2t at FILE (pure byte concat) and write FILE.report.md "
+                         "beside it; without -o, only analyse and print the re-capture report")
+    ap.add_argument("--no-decode", action="store_true",
+                    help="skip the ffmpeg intra-frame decode detection pass (on by default when "
+                         "ffmpeg is available; detection only, never affects the merged bytes)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--index-dir", metavar="DIR",
+                   help="store and read index caches in DIR (keyed by file name) instead of "
+                        "beside each capture")
+    g.add_argument("--no-index", action="store_true",
+                   help="do not read or write any index cache; build the index in memory each run")
 
     args = ap.parse_args(argv)
-    return args.func(args)
+    return cmd_run(args)
 
 
 if __name__ == "__main__":
