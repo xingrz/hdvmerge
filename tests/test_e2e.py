@@ -153,6 +153,16 @@ class TestEndToEnd(unittest.TestCase):
         self.assertFalse(ok2)                                        # integrity check catches it
         self.assertGreater(info2["cc"], info2["expected_cc"])
 
+    def test_unused_source_is_flagged_not_dropped(self):
+        # capA covers tape [0,20), capB [30,50) -> [20,30) is an unbridgeable gap. The greedy walk
+        # reaches only capA; capB's content must surface as `unused_sources`, never silently dropped.
+        a = _write(self.tmp, "capA.m2t", fx.render_capture(self.tape, 0, 20, (2007, 1, 1, 9, 0, 0)))
+        b = _write(self.tmp, "capB.m2t", fx.render_capture(self.tape, 30, 50, (2007, 1, 1, 9, 0, 0)))
+        plan = planmod.build_plan(scanmod.analyze([a, b]))
+        unused = {u["tag"] for u in plan.unused_sources}
+        self.assertIn("capB", unused)
+        self.assertEqual(sum(u["frames"] for u in plan.unused_sources), 20 * 4)
+
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")
         buildmod.build(plan, out)

@@ -76,6 +76,26 @@ def render(plan):
              % (span, _hms(plan.total_frames, fps), ncaptures, "" if ncaptures == 1 else "s"))
     L.append("")
 
+    # 0) loud warning: aligned sources the walk never reached — their content is NOT in the output
+    if plan.unused_sources:
+        total_f = sum(u["frames"] for u in plan.unused_sources)
+        L.append("## ⚠ %d source%s NOT used — ~%s of content is missing from the output"
+                 % (len(plan.unused_sources), "" if len(plan.unused_sources) == 1 else "s",
+                    _hms(total_f, fps)))
+        L.append("")
+        L.append("These aligned onto a separate stretch of tape with no overlapping capture to "
+                 "bridge them to the assembled chain, so the greedy walk never reached them. Their "
+                 "content is **not** in the merged file. Add an overlapping capture across the gap, "
+                 "or merge them separately.")
+        L.append("")
+        L.append("| source | recording span | tape TC span | length |")
+        L.append("| --- | --- | --- | --- |")
+        for u in plan.unused_sources:
+            L.append("| %s | %s – %s | %s – %s | %s |"
+                     % (u["tag"], _time(u["rec0"]), _time(u["rec1"]),
+                        _tc(u["tc0"]), _tc(u["tc1"]), _hms(u["frames"], fps)))
+        L.append("")
+
     # 1) the headline: re-capture list
     groups = []
     for r in plan.residuals:

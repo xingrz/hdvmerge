@@ -158,6 +158,19 @@ def build_plan(report):
                                   "dec": g[j].get("dec", 0)})
             frame += g[j]["npic"]
 
+    # transparency: any aligned source the greedy walk never reached (a separate tape region with
+    # no overlapping bridge, or one the walk stopped before). Its content is NOT in the output — say
+    # so loudly rather than dropping it silently.
+    used = {sg.tag for sg in segs}
+    unused = []
+    for t in chain:
+        if t not in used:
+            gp = F[t]["gops"]
+            unused.append({"tag": t, "ngops": len(gp),
+                           "frames": sum(g["npic"] for g in gp),
+                           "tc0": gp[0].get("tc"), "tc1": gp[-1].get("tc"),
+                           "rec0": gp[0].get("rec"), "rec1": gp[-1].get("rec")})
+
     return Plan(segments=segs, residuals=residuals, divergences=divergences,
                 gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
-                emitted_cc=emitted_cc, emitted_tei=emitted_tei)
+                emitted_cc=emitted_cc, emitted_tei=emitted_tei, unused_sources=unused)

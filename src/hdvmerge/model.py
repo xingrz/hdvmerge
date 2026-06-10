@@ -112,3 +112,4 @@ class Plan:
     bad_seams: int = 0
     emitted_cc: int = 0   # continuity breaks within the emitted GOPs — the output self-check's
     emitted_tei: int = 0  # expected totals (re-phasing must add none at seams)
+    unused_sources: list = field(default_factory=list)  # aligned sources the walk never reached
