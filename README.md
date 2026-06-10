@@ -26,14 +26,14 @@ around damage.
 ```
    overlapping captures (.m2t, read-only)
         │
-  index  per capture, cache its GOP table next to it: <capture>.idx.jsonl
-  │      (content hash, continuity breaks, TEI, recording time). The one expensive
-  │      step — rebuilt only when a file's content changes (idempotent).
+      index    per capture, cache its GOP table next to it: <capture>.idx.jsonl
+        │      (content hash, continuity breaks, TEI, recording time). The one expensive
+        │      step — rebuilt only when a file's content changes (idempotent).
         ▼
-  derive align all captures onto one tape axis by hash (auto-orders the files) and
-  │      pick each tape GOP's cleanest copy. Cheap; always recomputed from the indices.
+      derive   align all captures onto one tape axis by hash (auto-orders the files) and
+        │      pick each tape GOP's cleanest copy. Cheap; always recomputed from the indices.
         ▼
-  report the re-capture list: damage with no clean copy, by recording time
+      report the re-capture list: damage with no clean copy, by recording time
         │
         └─►  with -o   copy the exact byte ranges into one file — pure concatenation,
                        every stream (incl. the 0xA1 AUX timecode) preserved.   merged.m2t
