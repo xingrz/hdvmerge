@@ -131,16 +131,28 @@ def render(plan):
         L.append("")
 
     # 2) how it was assembled
-    L.append("## How it was assembled — %d segment%s, %d seam%s%s"
+    ngaps = sum(1 for s in segs if s.gap_before)
+    gapnote = (", %d stitched across a tape gap (marked ⟂)" % ngaps) if ngaps else ""
+    L.append("## How it was assembled — %d segment%s, %d seam%s%s%s"
              % (len(segs), "" if len(segs) == 1 else "s", max(0, len(segs) - 1),
                 "" if len(segs) - 1 == 1 else "s",
-                "" if not plan.bad_seams else ", ⚠ %d NOT tape-adjacent" % plan.bad_seams))
+                "" if not plan.bad_seams else ", ⚠ %d NOT tape-adjacent" % plan.bad_seams, gapnote))
+    if ngaps:
+        L.append("")
+        L.append("A **⟂ gap** row marks a real tape discontinuity: an island the walk reached only "
+                 "by tape TC (no overlapping bridge). Its content IS in the output — the join is "
+                 "signalled (a decoder resets cleanly there), and the timeline jumps by the missing "
+                 "stretch.")
     L.append("")
     L.append("| from | recording span | tape TC span |")
     L.append("| --- | --- | --- |")
+    prev_tc_end = None
     for s in segs:
+        if s.gap_before:
+            L.append("| ⟂ **gap** | _(missing)_ | %s → %s |" % (_tc(prev_tc_end), _tc(s.tc)))
         L.append("| %s | %s – %s | %s – %s |"
                  % (s.tag, _time(s.rec), _time(s.rec_end), _tc(s.tc), _tc(s.tc_end)))
+        prev_tc_end = s.tc_end
     L.append("")
 
     # divergences worth a human glance

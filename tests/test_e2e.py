@@ -153,15 +153,26 @@ class TestEndToEnd(unittest.TestCase):
         self.assertFalse(ok2)                                        # integrity check catches it
         self.assertGreater(info2["cc"], info2["expected_cc"])
 
-    def test_unused_source_is_flagged_not_dropped(self):
-        # capA covers tape [0,20), capB [30,50) -> [20,30) is an unbridgeable gap. The greedy walk
-        # reaches only capA; capB's content must surface as `unused_sources`, never silently dropped.
+    def test_island_is_stitched_back_across_a_gap(self):
+        # capA covers tape [0,20), capB [30,50) -> [20,30) is an unbridgeable gap (no overlap). capB
+        # is a separate island: the walk can't reach it by hash, but its tape TC and wall-clock both
+        # place it cleanly after capA, so the find-back stitches it in across a signalled gap rather
+        # than dropping it.
         a = _write(self.tmp, "capA.m2t", fx.render_capture(self.tape, 0, 20, (2007, 1, 1, 9, 0, 0)))
         b = _write(self.tmp, "capB.m2t", fx.render_capture(self.tape, 30, 50, (2007, 1, 1, 9, 0, 0)))
         plan = planmod.build_plan(scanmod.analyze([a, b]))
-        unused = {u["tag"] for u in plan.unused_sources}
-        self.assertIn("capB", unused)
-        self.assertEqual(sum(u["frames"] for u in plan.unused_sources), 20 * 4)
+        self.assertEqual(plan.unused_sources, [])               # recovered, not dropped or flagged
+        capb = [s for s in plan.segments if s.tag == "capB"]
+        self.assertEqual(len(capb), 1)
+        self.assertTrue(capb[0].gap_before)                     # stitched across a signalled gap
+        self.assertEqual(plan.total_frames, (20 + 20) * 4)      # both islands' frames recovered
+
+        # the built file: capB's bytes follow a disc marker; re-scanning sees the gap as signalled
+        # (not a continuity-break residual), and capA/capB are each internally seamless.
+        out = self._build(plan)
+        oidx = scanmod.scan_file(out)
+        self.assertEqual(len(oidx.gops), 40)
+        self.assertEqual(sum(g["cc"] for g in oidx.gops), 0)    # gap is disc-signalled, capB re-phased
 
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")

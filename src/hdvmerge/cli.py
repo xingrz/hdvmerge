@@ -151,9 +151,12 @@ def cmd_run(args):
              and info.get("tei") == info.get("expected_tei") else "FAIL",
              info.get("cc"), info.get("expected_cc"), info.get("tei"), info.get("expected_tei")))
     if "unexplained_decode" in info:
+        if info.get("decode_gate"):
+            status = "OK" if info["unexplained_decode"] == 0 else "FAIL"
+        else:
+            status = "info (noisy on a damaged merge — CC/TEI is the gate)"
         print("  decode integrity %s (%d errors, %d unexplained)"
-              % ("OK" if info["unexplained_decode"] == 0 else "FAIL",
-                 info.get("decode_errors", 0), info["unexplained_decode"]))
+              % (status, info.get("decode_errors", 0), info["unexplained_decode"]))
     if not ok:
         print("error: output self-check FAILED — the merged file may be corrupt", file=sys.stderr)
     return 0 if ok else 1

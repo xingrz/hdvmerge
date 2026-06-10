@@ -99,6 +99,10 @@ class Segment:
     rec_end: Optional[str] = None    # recording time of the segment's last GOP
     tc: Optional[str] = None         # tape timecode of the segment's first GOP
     tc_end: Optional[str] = None     # tape timecode of the segment's last GOP
+    gap_before: bool = False         # a real tape gap precedes this segment (a separate island
+                                     # stitched in by tape TC, not hash) — build marks it, never
+                                     # re-phases CC across it
+    frame0: int = 0                  # cumulative output frame at this segment's start (self-check)
 
 
 @dataclass
@@ -112,4 +116,5 @@ class Plan:
     bad_seams: int = 0
     emitted_cc: int = 0   # continuity breaks within the emitted GOPs — the output self-check's
     emitted_tei: int = 0  # expected totals (re-phasing must add none at seams)
-    unused_sources: list = field(default_factory=list)  # aligned sources the walk never reached
+    unused_sources: list = field(default_factory=list)  # sources that couldn't be placed (flagged)
+    video_pid: Optional[int] = None   # for build's gap discontinuity markers

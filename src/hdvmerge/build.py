@@ -24,7 +24,7 @@ sees it as one capture. (Real discontinuities — gaps with no clean copy — ar
 import os
 
 from . import SYNC, TS
-from .ts import detect_framing
+from .ts import detect_framing, make_disc_marker
 
 
 def _framing_stride(path, scan_bytes=2 << 20):
@@ -42,7 +42,8 @@ def build(plan, out_path, on_progress=None):
         raise ValueError("empty plan")
     stride = _framing_stride(segs[0].src)
     chunk_size = stride * 65536          # whole packets per read (segment ranges are stride-aligned)
-    grand = sum(s.nbytes for s in segs)
+    marker = make_disc_marker(plan.video_pid) if plan.video_pid is not None else b""
+    grand = sum(s.nbytes for s in segs) + sum(len(marker) for s in segs if s.gap_before)
     written = 0
     running_cc = {}                      # pid -> last emitted CC nibble (continuity across segments)
     tmp = out_path + ".part"
@@ -50,8 +51,14 @@ def build(plan, out_path, on_progress=None):
         for si, sg in enumerate(segs):
             assert sg.off < sg.end, "empty/inverted segment %s" % sg.tag
             assert (sg.end - sg.off) % stride == 0, "segment %s not packet-aligned" % sg.tag
+            if sg.gap_before and marker:
+                # a real tape gap precedes this island: signal the discontinuity and start a fresh
+                # CC phase (do NOT re-phase across the gap — it is genuinely not continuous)
+                o.write(marker)
+                written += len(marker)
+                running_cc = {}
             delta = {}                   # pid -> CC offset for this segment (continue from running)
-            first_seg = si == 0
+            first_seg = si == 0 or sg.gap_before
             with open(sg.src, "rb") as f:
                 f.seek(sg.off)
                 rem = sg.end - sg.off

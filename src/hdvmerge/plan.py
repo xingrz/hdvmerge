@@ -140,6 +140,13 @@ def build_plan(report):
         sg.tc = g[sg.j0].get("tc")
         sg.tc_end = g[sg.j1].get("tc")
 
+    # find-back: a source the greedy walk never reached is a separate tape island (no overlapping
+    # GOP to bridge it by hash). Stitch each back in by *tape TC* — but only when the tape TC AND
+    # the wall-clock both agree it sits as one disjoint block cleanly before or after the assembled
+    # chain (so placement is reliable); otherwise leave it flagged in `unused`. A stitched island is
+    # a real discontinuity, so it carries `gap_before` (build marks it and never re-phases across it).
+    segs, unused = _stitch_islands(segs, chain, F)
+
     # residuals: emitted GOPs still damaged (no clean copy anywhere). `emitted_cc/tei` sum the
     # TS-level breaks the build copies out — the output self-check expects exactly these and no more
     # (re-phasing must introduce no new break at any seam).
@@ -147,6 +154,7 @@ def build_plan(report):
     emitted_cc = emitted_tei = 0
     frame = 0
     for sg in segs:
+        sg.frame0 = frame
         fo = F[sg.tag]
         g = fo["gops"]
         for j in range(sg.j0, sg.j1 + 1):
@@ -158,19 +166,51 @@ def build_plan(report):
                                   "dec": g[j].get("dec", 0)})
             frame += g[j]["npic"]
 
-    # transparency: any aligned source the greedy walk never reached (a separate tape region with
-    # no overlapping bridge, or one the walk stopped before). Its content is NOT in the output — say
-    # so loudly rather than dropping it silently.
-    used = {sg.tag for sg in segs}
-    unused = []
-    for t in chain:
-        if t not in used:
-            gp = F[t]["gops"]
-            unused.append({"tag": t, "ngops": len(gp),
-                           "frames": sum(g["npic"] for g in gp),
-                           "tc0": gp[0].get("tc"), "tc1": gp[-1].get("tc"),
-                           "rec0": gp[0].get("rec"), "rec1": gp[-1].get("rec")})
-
     return Plan(segments=segs, residuals=residuals, divergences=divergences,
                 gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
-                emitted_cc=emitted_cc, emitted_tei=emitted_tei, unused_sources=unused)
+                emitted_cc=emitted_cc, emitted_tei=emitted_tei, unused_sources=unused,
+                video_pid=report.source(chain[0]).video_pid)
+
+
+def _stitch_islands(segs, chain, F):
+    """Place walk-unreached sources back into ``segs`` by tape TC. Returns ``(segs, unused)``: the
+    placed islands carry ``gap_before``; sources that can't be placed reliably stay in ``unused``."""
+    used = {sg.tag for sg in segs}
+    main_tc = [s.tc for s in segs if s.tc] + [s.tc_end for s in segs if s.tc_end]
+    main_rec = [s.rec for s in segs if s.rec] + [s.rec_end for s in segs if s.rec_end]
+    islands, unused = [], []
+    for t in chain:
+        if t in used:
+            continue
+        gp = F[t]["gops"]
+        entry = {"tag": t, "ngops": len(gp), "frames": sum(g["npic"] for g in gp),
+                 "tc0": gp[0].get("tc"), "tc1": gp[-1].get("tc"),
+                 "rec0": gp[0].get("rec"), "rec1": gp[-1].get("rec")}
+        tcs = [g["tc"] for g in gp if g.get("tc")]
+        recs = [g["rec"] for g in gp if g.get("rec")]
+        placed = False
+        if main_tc and main_rec and tcs and recs:
+            tlo, thi, rlo, rhi = min(tcs), max(tcs), min(recs), max(recs)
+            mtlo, mthi, mrlo, mrhi = min(main_tc), max(main_tc), min(main_rec), max(main_rec)
+            after = tlo > mthi and rlo > mrhi
+            before = thi < mtlo and rhi < mrlo
+            clash = any(not (thi < s.tc or tlo > s.tc_end) for _, s in islands)  # overlaps a placed island
+            if (after or before) and not clash:
+                islands.append((tlo, Segment(
+                    tag=t, src=F[t]["s"].src_path, off=gp[0]["off"], end=gp[-1]["end"],
+                    j0=0, j1=len(gp) - 1, ngops=len(gp), nbytes=gp[-1]["end"] - gp[0]["off"],
+                    rec=gp[0].get("rec"), rec_end=gp[-1].get("rec"),
+                    tc=gp[0].get("tc"), tc_end=gp[-1].get("tc"), gap_before=True)))
+                placed = True
+        if not placed:
+            unused.append(entry)
+    if not islands:
+        return segs, unused
+    runs = [(min(main_tc), segs)] + [(tlo, [seg]) for tlo, seg in islands]
+    runs.sort(key=lambda r: r[0])
+    out = []
+    for i, (_, rsegs) in enumerate(runs):
+        if i:
+            rsegs[0].gap_before = True
+        out.extend(rsegs)
+    return out, unused

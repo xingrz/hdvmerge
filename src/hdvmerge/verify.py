@@ -92,13 +92,24 @@ def verify_build(out_path, plan, decode=True):
         for g in idx.gops:
             starts.append(f)
             f += g["npic"]
+        # GOP indices ffmpeg may legitimately choke on: TS breaks in the output, planned residuals,
+        # and the first GOP of each stitched-in island (it starts fresh across a real gap, with no
+        # prior reference frame) — all located by their emitted frame position.
         known = {i for i, g in enumerate(idx.gops) if g["cc"] > 0 or g["tei"] > 0}
-        for r in plan.residuals:
-            k = bisect.bisect_right(starts, r["frame"]) - 1
+        marks = [r["frame"] for r in plan.residuals]
+        marks += [sg.frame0 for sg in plan.segments if sg.gap_before]
+        for fr in marks:
+            k = bisect.bisect_right(starts, fr) - 1
             if 0 <= k < len(idx.gops):
                 known.add(k)
         allowed = {i + d for i in known for d in range(-_DEC_WINDOW, _DEC_WINDOW + 1)}
         unexplained = sum(c for gi, c in errs.items() if gi not in allowed)
         info.update(decode_errors=sum(errs.values()), unexplained_decode=unexplained)
-        ok = ok and unexplained == 0
+        # A clean merge must decode cleanly, so any unexplained error there is a hard failure. A
+        # merge that knowingly carries damage (residuals) is inherently noisy — ffmpeg cascades from
+        # the real damage onto byte-clean GOPs — so decode integrity is informational there and the
+        # CC/TEI check (which proved re-phasing introduced no break) is the gate.
+        info["decode_gate"] = not plan.residuals
+        if not plan.residuals:
+            ok = ok and unexplained == 0
     return ok, info

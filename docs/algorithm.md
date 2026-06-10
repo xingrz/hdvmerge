@@ -68,10 +68,23 @@ hashes are unchanged and a built file re-indexes/re-merges like a raw capture.
 
 The payoff: CC, PCR and PTS are all continuous at every seam, so a decoder runs straight through (no
 reset, no leading-B-frame failure) and a re-fed merge shows zero continuity breaks and zero decode
-errors at its own seams — it reads back like one capture. After the build, `verify.verify_build`
-self-checks the output: AUX timecode survival, CC/TEI integrity (the output's breaks must equal what
-the plan emitted — re-phasing adds none), and an ffmpeg decode pass whose every error must land on a
-known-damaged GOP. Any deviation fails the build.
+errors at its own seams — it reads back like one capture.
+
+**Find-back (separate tape islands).** A source the greedy walk never reached — a stretch of tape no
+overlapping capture bridges to the chain — used to be dropped silently. `plan._stitch_islands` now
+places each back in **by tape TC** (cross-checked against the wall-clock): a source that both clocks
+agree sits as one disjoint block before/after the chain is stitched in across a real **gap**
+(`Segment.gap_before`); one that can't be placed reliably stays flagged in `plan.unused_sources`.
+`build` does NOT re-phase CC across a gap (it is genuinely discontinuous) — it writes a
+`make_disc_marker` there so a decoder resets cleanly and the (preserved) PCR jump shows the missing
+stretch. The report draws a `⟂ gap` row.
+
+After the build, `verify.verify_build` self-checks the output: AUX timecode survival; **CC/TEI
+integrity** (the output's breaks must equal what the plan emitted — re-phasing adds none — the hard
+gate that catches any CC-rewrite mistake); and an ffmpeg decode pass. Decode integrity is a hard
+gate only on a *clean* merge (it must decode with zero errors); a merge that knowingly carries
+damage is inherently noisy (ffmpeg cascades from the real damage onto byte-clean GOPs), so there it
+is reported, not gated.
 
 ## Why open GOPs still splice cleanly
 
