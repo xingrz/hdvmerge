@@ -17,7 +17,7 @@ JSONL: the first line is the meta object, every following line is one GOP record
 
 ```jsonc
 // meta (line 1) — example values
-{"v":2,"tag":"clip-a","size":1234567890,
+{"v":3,"tag":"clip-a","size":1234567890,
  "fingerprint":"1234567890:0123456789abcdef0123456789abcdef",  // size + hash(head+tail); change detection
  "video_pid":2064,"aux_pid":2065,                              // Sony 0xA1 stream, or null
  "fps":25.0,"decoded":false,                                   // `decoded`: has the decode pass run?
@@ -36,7 +36,10 @@ JSONL: the first line is the meta object, every following line is one GOP record
  "tei":0,                     // transport_error_indicator packets inside the GOP
  "dec":0,                     // ffmpeg decode errors (0 until the decode pass runs); intra-frame damage
  "rec":"2007-01-01 09:00:00", // wall-clock recording time (nearest AUX packet), or null
- "tc":"07:00:00:00"}          // tape SMPTE timecode HH:MM:SS:FF (nearest AUX packet), or null
+ "tc":"07:00:00:00",          // tape SMPTE timecode HH:MM:SS:FF (nearest AUX packet), or null
+ "seam":0}                    // 1 if this GOP starts right after a build disc marker (a seam);
+                              //   `plan` lists the decode pass's splice over-report near it as an
+                              //   ignorable seam flag, not a re-capture target
 ```
 
 The schema version `v` gates cache reuse: an index whose `v` predates the running build (e.g. a

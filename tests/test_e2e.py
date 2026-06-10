@@ -114,6 +114,32 @@ class TestEndToEnd(unittest.TestCase):
         plan = planmod.build_plan(rep)
         self.assertTrue(any(r["tag"] == "capA" and r.get("dec") for r in plan.residuals))
 
+    def test_decode_overreport_at_seam_is_discounted(self):
+        # Build a merge (markers at the seams), then re-feed it as a single source. A decode
+        # over-report landing on a seam GOP must NOT become a residual; isolated decode damage
+        # away from any seam still must.
+        rep = scanmod.analyze(self._captures())
+        out = self._build(planmod.build_plan(rep))
+        idx = scanmod.scan_file(out)
+        idx.src_path = out                                       # scan_file doesn't set it
+        seam_is = [g["i"] for g in idx.gops if g.get("seam")]
+        self.assertTrue(seam_is)                                 # disc markers detected as seams
+        s0 = next(s for s in seam_is if s >= planmod.SEAM_DEC_MARGIN)
+        artifact_g = idx.gops[s0 - 3]                            # over-report lands ~3 GOPs early
+        far_g = next(g for g in idx.gops
+                     if min(abs(g["i"] - s) for s in seam_is) > planmod.SEAM_DEC_MARGIN + 1)
+        self.assertFalse(artifact_g.get("seam"))
+        artifact_g["dec"] = 2
+        far_g["dec"] = 2
+        rep2 = model.Report(sources=[idx], chain=[idx.tag], shifts={idx.tag: 0}, gaps=[])
+        plan2 = planmod.build_plan(rep2)
+        res = {r["gop"] for r in plan2.residuals}
+        seam = {r["gop"] for r in plan2.seam_flags}
+        self.assertNotIn(artifact_g["i"], res)                   # not a re-capture target ...
+        self.assertIn(artifact_g["i"], seam)                     # ... but listed as an ignorable seam flag
+        self.assertIn(far_g["i"], res)                           # genuine single-copy damage kept
+        self.assertNotIn(far_g["i"], seam)
+
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")
         buildmod.build(plan, out)

@@ -19,6 +19,9 @@ from .model import Plan, Segment
 
 EDGE = 12              # GOPs near a capture's head/tail to avoid (capture can corrupt edges)
 CLEAN_RUN_CAP = 120
+SEAM_DEC_MARGIN = 5    # GOPs before a signalled seam over which to discount the decode pass's
+                       # splice over-report (the incoming GOP's leading B-frames fail to decode
+                       # across the cut and, by display-PTS, attribute a few GOPs before the seam)
 
 
 def _prep(report):
@@ -29,8 +32,25 @@ def _prep(report):
         hpos = {}
         for j, h in enumerate(H):
             hpos.setdefault(h, []).append(j)
-        bad = [(g["cc"] > 0 or g["tei"] > 0 or g.get("dec", 0) > 0) for g in s.gops]
-        F[tag] = {"s": s, "gops": s.gops, "n": len(s.gops), "H": H, "hpos": hpos, "bad": bad}
+        # A merged file signals each seam with a disc marker (`seam`); the decode pass over-reports
+        # at that splice (the incoming GOP's leading B-frames can't decode across the cut), which
+        # by display-PTS lands a few GOPs *before* the seam. Discount dec in a small window leading
+        # into each seam so re-feeding a built file does not flag its own seams as intra-frame
+        # damage. This is safe: a seam is where the build routed around damage onto a clean copy,
+        # so the GOPs it emitted into the seam are clean by construction — genuine single-copy
+        # damage is kept mid-segment (no seam there), away from any window, and still counts. cc/tei
+        # are never discounted.
+        n = len(s.gops)
+        dec = [g.get("dec", 0) for g in s.gops]
+        in_seam_window = [False] * n
+        for j, g in enumerate(s.gops):
+            if g.get("seam"):
+                for k in range(max(0, j - SEAM_DEC_MARGIN), min(n, j + 2)):
+                    in_seam_window[k] = True
+        bad = [(g["cc"] > 0 or g["tei"] > 0 or (dec[j] > 0 and not in_seam_window[j]))
+               for j, g in enumerate(s.gops)]
+        F[tag] = {"s": s, "gops": s.gops, "n": len(s.gops), "H": H, "hpos": hpos, "bad": bad,
+                  "dec": dec, "seam_win": in_seam_window}
     return F
 
 
@@ -137,18 +157,24 @@ def build_plan(report):
         sg.tc = g[sg.j0].get("tc")
         sg.tc_end = g[sg.j1].get("tc")
 
-    # residuals: emitted GOPs still damaged (no clean copy anywhere)
+    # residuals: emitted GOPs still damaged (no clean copy anywhere). Decode flags that fall in a
+    # seam window are not residuals (splice over-report); they are surfaced separately as ignorable.
     residuals = []
+    seam_flags = []
     frame = 0
     for sg in segs:
-        g = F[sg.tag]["gops"]
+        fo = F[sg.tag]
+        g = fo["gops"]
         for j in range(sg.j0, sg.j1 + 1):
-            if F[sg.tag]["bad"][j]:
+            if fo["bad"][j]:
                 residuals.append({"frame": frame, "rec": g[j].get("rec"), "tc": g[j].get("tc"),
                                   "tag": sg.tag, "gop": j, "cc": g[j]["cc"], "tei": g[j]["tei"],
                                   "dec": g[j].get("dec", 0)})
+            elif fo["dec"][j] > 0 and fo["seam_win"][j]:
+                seam_flags.append({"frame": frame, "rec": g[j].get("rec"), "tc": g[j].get("tc"),
+                                   "tag": sg.tag, "gop": j, "dec": fo["dec"][j]})
             frame += g[j]["npic"]
 
-    return Plan(segments=segs, residuals=residuals, divergences=divergences,
-                gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
-                video_pid=report.source(chain[0]).video_pid)
+    return Plan(segments=segs, residuals=residuals, seam_flags=seam_flags,
+                divergences=divergences, gaps=report.gaps, total_frames=frame, fps=fps,
+                bad_seams=bad_seams, video_pid=report.source(chain[0]).video_pid)
