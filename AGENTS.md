@@ -39,7 +39,7 @@ into a build:
 
 ```
 hdvmerge INPUT…              -> indices (cached) + the Markdown re-capture report   (no build)
-hdvmerge INPUT… -o out.m2t   -> same, then build out.m2t (pure byte concat) + report beside it
+hdvmerge INPUT… -o out.m2t   -> same, then build out.m2t (byte concat + seam markers) + report
 ```
 
 Internally three stages, exposed as a library rather than separate commands:
@@ -60,7 +60,7 @@ src/hdvmerge/
   scan.py       fingerprint + idempotent per-file index cache + greedy hash alignment -> Report
   probe.py      optional ffmpeg decode-damage detection (detection only, never the merge)
   plan.py       greedy indel-proof walk -> Plan (segments + residuals + divergences)
-  build.py      pure byte-concat (the only writer of output bytes)
+  build.py      byte-concat + an AF-only disc marker per seam (the only writer of output bytes)
   report.py     Plan -> human Markdown report;  verify.py  AUX survival;  cli.py  the command
 tests/  fixtures.py + test_*.py   (synthetic TS, no sample data needed)
 docs/   hdv-internals.md  algorithm.md  formats.md
@@ -73,10 +73,19 @@ are imported everywhere — do not fork copies into the stage modules.
 
 - **GOP timecode is zero.** Sony HDV writes `00:00:00:00` into the MPEG GOP header
   timecode; the real clock is only in the AUX stream. Align by content hash, not GOP TC.
-- **Recording time is not linear with tape position.** The original recording was
-  paused/resumed, so the AUX wall-clock jumps. Read it per byte position (`aux.parse_rec`);
-  never extrapolate `base + frames/fps` — that drifts tens of seconds. Same method as the
-  sibling project `iina-dv-timecode` (`src/sources/m2t.ts`).
+- **The AUX `0xA1` anchor carries two clocks** (both via `aux.parse_aux`, both stored per GOP):
+  the **wall-clock** date/time (`rec`, second resolution) and the **tape SMPTE timecode** (`tc`,
+  the `0x63` pack `HH FF SS MM`, frame-accurate; hour is a camera preset, constant `07` here). The
+  tape TC is what you cue a deck on for a re-capture, so the report shows it; see
+  `docs/hdv-internals.md`.
+- **Neither clock is a safe coordinate — align by hash, label by clock.** The wall-clock jumps with
+  each take (not linear with tape position). The tape TC is rec-run: it *continues* across takes
+  (regen on resume), so it is usually monotonic along a tape recorded head-to-tail — **but** a new
+  recording on blank tape after a gap restarts it at the preset (`07:00:00`), so a capture can hold
+  a legitimate **TC jump-back**. So it is piecewise-monotonic; never assume global monotonicity,
+  never extrapolate `base + frames/fps`, and never order/align by either clock — that is hash work.
+  A TC jump-back in a capture/merge is real tape behaviour, not a bug. Same anchor method as the
+  sibling `iina-dv-timecode` (`src/sources/m2t.ts`).
 - **GOPs are variable length** (~12 frames here). Cut only at GOP boundaries; `gop.py`
   finds them by the `00 00 01 B8` start code.
 - **Open GOPs splice cleanly anyway** — the leading B-frames of a GOP reference the
@@ -101,7 +110,11 @@ are imported everywhere — do not fork copies into the stage modules.
 
 ## Invariants (assert + test)
 
-- Sources are read-only; `build` is the only writer and copies exact byte ranges.
+- Sources are read-only; `build` is the only writer: it copies exact source byte ranges verbatim
+  and inserts one AF-only `discontinuity_indicator` marker (`ts.make_disc_marker`) at each seam. No
+  source byte is ever modified; the marker carries no ES payload, so GOP content hashes are
+  unchanged and a built file re-indexes/re-merges exactly like a raw capture (its own seams read as
+  signalled, not as continuity-break damage).
 - Every cross-file seam is tape-adjacent: `plan` counts `bad_seams` (must be 0) by checking
   the incoming GOP's predecessor hash equals the outgoing GOP's hash.
 - No silent drop of good content: a damaged GOP is only emitted (as a `residual`) when no

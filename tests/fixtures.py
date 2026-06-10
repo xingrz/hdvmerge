@@ -62,8 +62,14 @@ def gop_es(tape_idx, frames=4, closed=1, broken=0, corrupt=False):
     return seq + goph + bytes(body)
 
 
-def aux_payload(y, mo, d, h, mi, s):
-    anchor = bytes([0x63, 0, 0, 0, 0,
+def aux_payload(y, mo, d, h, mi, s, tc=None):
+    """One Sony-AUX PES. ``tc`` is an optional ``(HH, MM, SS, FF)`` tape timecode written into the
+    0x63 pack (byte order ``HH FF SS MM``); omitted -> a zeroed 0x63 pack."""
+    if tc is None:
+        thh = tmm = tss = tff = 0
+    else:
+        thh, tmm, tss, tff = tc
+    anchor = bytes([0x63, _bcd(thh), _bcd(tff), _bcd(tss), _bcd(tmm),
                     0xC0, 0x00, _bcd(d), _bcd(mo), _bcd(y % 100),
                     0xFF, _bcd(s), _bcd(mi), _bcd(h), 0x00])
     return b"\x00\x00\x01\xbf" + struct.pack(">H", len(anchor)) + anchor
@@ -87,8 +93,8 @@ class Capture:
         self._emit(PMT_PID, _pmt(), True)
         return self
 
-    def aux(self, dt):
-        self._emit(AUX_PID, _pad184(aux_payload(*dt)), True)
+    def aux(self, dt, tc=None):
+        self._emit(AUX_PID, _pad184(aux_payload(*dt, tc=tc)), True)
         return self
 
     def gop(self, es, cc_break=False):
@@ -115,7 +121,10 @@ def render_capture(tape, start, stop, base_dt, damage=None):
         cap.psi()                          # repeat PAT/PMT before every GOP, like real HDV, so a
                                            # merge that starts mid-file still carries the tables
         t = t0 + datetime.timedelta(seconds=idx)
-        cap.aux((t.year, t.month, t.day, t.hour, t.minute, t.second))
+        # tape TC: a running timecode offset from the wall clock (hours 07 here), frame-accurate —
+        # mirrors real Sony HDV, where the 0x63 tape TC tracks the wall clock at a constant offset.
+        tc = (7, t.minute, t.second, idx % 25)
+        cap.aux((t.year, t.month, t.day, t.hour, t.minute, t.second), tc=tc)
         dmg = (damage or {}).get(idx)
         es = gop_es(idx, frames=tape[idx]["frames"], closed=tape[idx]["closed"],
                     broken=tape[idx]["broken"], corrupt=(dmg == "corrupt"))

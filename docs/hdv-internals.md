@@ -45,28 +45,59 @@ Start codes are `00 00 01 xx`:
   count. hdvmerge hashes the bytes from one GOP start code to the next as the GOP's content
   fingerprint.
 
-## Sony AUX recording timecode (`stream_type 0xA1`)
+## Sony AUX recording date/time + tape timecode (`stream_type 0xA1`)
 
-Inside a `private_stream_2` PES (`00 00 01 BF`), at fixed offsets from a `0x63` anchor:
+Inside a `private_stream_2` PES (`00 00 01 BF`), at fixed offsets from a `0x63` anchor sit two
+distinct clocks (one anchor, decoded in a single pass by `aux.parse_aux`):
 
 ```
-63 .. .. .. ..   c0 .. .. .. ..   ff   SS MM HH ..
-└ SMPTE timecode (rec-run, unreliable — ignored)
-                 └ 0xC0 rec_date pack: +2 day  +3 month  +4 year   (BCD)
-                                  └ separator
-                                     └ wall-clock seconds, minutes, hours (BCD; reversed vs DV)
+63 HH FF SS MM   c0 .. DD MM YY   ff   ss mm hh ..
+└ tape timecode pack (frame-accurate)  └ wall-clock seconds, minutes, hours (BCD; reversed vs DV)
+   HH FF SS MM, BCD          └ 0xC0 rec_date pack: +2 day  +3 month  +4 year   (BCD)
 ```
 
 `bcd(b) = (b & 0x0F) + ((b >> 4) & 0x0F) * 10`. The PES context + the `63 .. c0 .. ff` shape
-is specific enough that random bytes don't false-match. The recording date/time is the real
-camera clock; it is **not linear with tape position** (pauses jump it forward), so read it per
-position, never extrapolate.
+is specific enough that random bytes don't false-match.
+
+- **Wall-clock date/time** (the `0xC0` date pack + the `ss mm hh` after the `0xFF`) is the
+  camera's real-time clock, **second** resolution.
+- **Tape timecode** (the `0x63` pack's four data bytes, `HH FF SS MM`) is the camcorder's
+  rec-run TC track, **frame** resolution. Field order verified on real captures: decoding
+  `HH FF SS MM` yields a clean SMPTE timecode (mask flag bits `HH&0x3F FF&0x3F SS&0x7F MM&0x7F`).
+  The hour is a camera **preset** — on these tapes a constant `07`, so the meaningful, varying part
+  is `MM:SS:FF`; a 60-min tape runs `07:00:00:00`→`07:59:59:xx` and never reaches `08` (verified at
+  a 65-min tape's EOF: `07:59:59:22`, hour byte still `0x07`).
+
+How the two clocks move is **different**, and neither is a safe coordinate:
+
+- The **wall-clock** jumps with each take (the camera was used across hours/days), so it is *not*
+  linear with tape position. Verified: one tape's takes span two calendar days while its tape TC
+  climbs as one smooth ramp.
+- The **tape TC** is rec-run, so it *continues* across takes — it does **not** reset every time you
+  press record. On a tape recorded head-to-tail on one machine (incl. pauses, or rewind-and-
+  overwrite where the camera regens the existing TC at the resume point) it is continuous/monotonic
+  along the tape. **But** where a new recording starts on *blank* tape after a fast-forward gap,
+  there is no TC to regen from and the camera restarts at the preset (`07:00:00:00`) — so a capture
+  can contain a **TC jump-back**. It is therefore piecewise-monotonic; **never assume global
+  monotonicity, and never use it for ordering/alignment** (that is always content-hash work). A
+  jump-back in a capture is legitimate tape behaviour, not a parse error or a merge bug.
+
+So both are **per-position labels, never extrapolated**. The tape TC is the value you cue on a deck
+to re-capture, so the index carries it per GOP (`tc`) and the report shows it beside the wall-clock.
+(Earlier notes called this pack "unreliable, ignored"; that was wrong — it is a valid, frame-
+accurate timecode, just a rec-run/offset clock distinct from the wall-clock.)
+
+The other private stream, `0xA0` (usually PID `0x815`), carries only a per-frame timing counter —
+no date, timecode, or camera metadata — and the camera-data DV packs (`0x70`/`0x71`) that *can*
+ride in `0xA1` are written empty (`0xff`, auto mode) on the Sony HDV captures inspected.
 
 ## Why ffmpeg never builds the output
 
 `ffmpeg -c copy` re-muxes and drops unknown private streams, including `0xA1` — the recording
-timecode would be lost. So the merge (`build`) and verification (`verify`) are pure byte-level
-work: exact byte ranges copied, every stream preserved. ffmpeg is used in one place only: the
-decode pass (`probe`) decodes the video to *detect* intra-frame damage the TS layer can't reveal
-— on by default when ffmpeg is on PATH, skipped with `--no-decode`. Detection never touches the
-output bytes.
+timecode would be lost. So the merge (`build`) and verification (`verify`) are byte-level work:
+exact source byte ranges copied verbatim, every stream preserved, plus one AF-only
+`discontinuity_indicator` marker inserted at each seam (`ts.make_disc_marker`) to signal the
+capture-relative CC jump there — additive only, no source byte modified, no ES so GOP hashes are
+unchanged. ffmpeg is used in one place only: the decode pass (`probe`) decodes the video to
+*detect* intra-frame damage the TS layer can't reveal — on by default when ffmpeg is on PATH,
+skipped with `--no-decode`. Detection never touches the output bytes.

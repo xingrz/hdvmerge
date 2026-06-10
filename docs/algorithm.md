@@ -56,8 +56,12 @@ and seamless (the planner asserts `bad_seams == 0`).
 
 `build` copies each segment's exact byte range from the original capture and concatenates them.
 No re-encode, no remux: every TS stream — including Sony's `0xA1` AUX timecode — is preserved
-byte for byte. Seams are ordinary TS stream discontinuities (different capture clocks), exactly
-like a physical tape splice; players handle them, and `verify` confirms the AUX timecode is
+byte for byte. At each seam the two captures meet with independent, capture-relative continuity
+counters (the video CC jumps even though the PCR/PTS, being tape-absolute, stay continuous), so
+`build` inserts one AF-only `discontinuity_indicator` marker there (`ts.make_disc_marker`). It is
+purely additive — no source byte is touched, and it carries no ES so GOP hashes are unchanged — and
+it makes the splice explicit: a decoder resets cleanly, and re-indexing a built file reads its own
+seams as signalled rather than as continuity-break damage. `verify` confirms the AUX timecode is
 readable at both ends of the result.
 
 ## Why open GOPs still splice cleanly

@@ -104,3 +104,15 @@ def disc_indicator(pkt):
 def with_cc(pkt, new_cc):
     """``pkt`` with its continuity_counter nibble replaced; every other byte preserved."""
     return pkt[:3] + bytes([(pkt[3] & 0xF0) | (new_cc & 0x0F)]) + pkt[4:]
+
+
+def make_disc_marker(pid, cc=0):
+    """A 188-byte payload-less TS packet on ``pid`` whose adaptation field sets the
+    ``discontinuity_indicator``. ``build`` inserts one at each seam to signal the (benign) CC
+    discontinuity where two captures meet, so a decoder resets cleanly there and a re-scan does
+    not mistake the splice for packet loss. It is AFC=2 (adaptation-field only): it carries no
+    elementary-stream payload, so it never enters a GOP's ES and never changes a GOP content hash
+    — the marker is purely additive, no source byte is touched."""
+    hdr = bytes([SYNC, (pid >> 8) & 0x1F, pid & 0xFF, 0x20 | (cc & 0x0F)])
+    af = bytes([TS - 5, 0x80]) + b"\xFF" * (TS - 6)   # af_length, flags=discontinuity, stuffing
+    return hdr + af

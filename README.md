@@ -35,8 +35,9 @@ around damage.
         ▼
       report the re-capture list: damage with no clean copy, by recording time
         │
-        └─►  with -o   copy the exact byte ranges into one file — pure concatenation,
-                       every stream (incl. the 0xA1 AUX timecode) preserved.   merged.m2t
+        └─►  with -o   copy the exact byte ranges into one file — byte concatenation,
+                       every stream (incl. the 0xA1 AUX timecode) preserved, a small
+                       discontinuity marker added at each seam.               merged.m2t
 ```
 
 Indexing is the only costly work, so it is cached per file next to the capture and reused
@@ -57,7 +58,7 @@ pip install -e .          # provides the `hdvmerge` command
 
 ```sh
 hdvmerge CLIP-*.m2t                    # analyse: index (cached) + print the re-capture list
-hdvmerge CLIP-*.m2t -o merged.m2t      # same, then build the merged file (pure byte concat)
+hdvmerge CLIP-*.m2t -o merged.m2t      # same, then build the merged file (byte concat + seam markers)
 ```
 
 The loop: run it to see what needs re-capturing → re-capture those spots → drop the new files in
@@ -70,7 +71,7 @@ PATH; pass `--no-decode` to skip it.
 | Flag | Purpose |
 | --- | --- |
 | `INPUT…` | Capture files or a directory of them. Each is indexed (cached as `<capture>.idx.jsonl`, rebuilt only on change); all are then aligned and the re-capture list is printed. |
-| `-o FILE` | Also build the merged file at `FILE` by pure byte concatenation, and write `FILE.report.md` beside it. |
+| `-o FILE` | Also build the merged file at `FILE` by byte concatenation (one discontinuity marker inserted per seam; no source byte modified), and write `FILE.report.md` beside it. |
 | `--no-decode` | Skip the ffmpeg intra-frame decode detection pass (otherwise on whenever ffmpeg is available; detection only, never affects the merged bytes). |
 | `--index-dir DIR` | Store and read index caches in `DIR` (keyed by file name) instead of beside each capture. |
 | `--no-index` | Don't read or write any index cache; build the index in memory each run. |
@@ -82,12 +83,13 @@ PATH; pass `--no-decode` to skip it.
 - Mid-file damage is routed around automatically wherever an overlapping capture
   has a clean copy of that GOP — including a continuity break that swallowed
   several GOPs, recovered from the other capture.
-- Every TS stream is byte-preserved, so Sony's `0xA1` AUX recording timecode is
-  intact — `merge` self-verifies it is still readable at both ends of the output.
+- Every source TS byte is preserved (only an AF-only discontinuity marker is added
+  at each seam), so Sony's `0xA1` AUX recording timecode is intact — `merge`
+  self-verifies it is still readable at both ends of the output.
 - A **re-capture list**: the exact spots where no capture has a clean copy, each
-  labelled with the camera's real recording time (read from the AUX stream, not
-  extrapolated — the recording clock is not linear with tape position when the
-  original recording was paused).
+  labelled with both the camera's real recording time *and* the tape SMPTE timecode
+  to cue on the deck (both read from the AUX stream, never extrapolated — the
+  recording clock is not linear with tape position).
 
 ## Limitations
 

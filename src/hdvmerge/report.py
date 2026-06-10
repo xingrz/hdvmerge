@@ -22,6 +22,11 @@ def _time(rec):
     return rec.split(" ")[1] if rec and " " in rec else (rec or "?")
 
 
+def _tc(tc):
+    """Tape timecode HH:MM:SS:FF (frame-accurate), or '?' when no AUX timecode was read."""
+    return tc or "?"
+
+
 _SEP = " -_.·"
 
 
@@ -84,13 +89,15 @@ def render(plan):
         L.append("## Re-capture these — %d spot%s with no clean copy"
                  % (len(groups), "" if len(groups) == 1 else "s"))
         L.append("")
-        L.append("Each ~0.5 s, by the camera's real recording clock. Re-capture with ≥15 s of "
-                 "good footage on both sides, drop the new file in, and re-run.")
+        L.append("Each ~0.5 s. **Tape TC** is the frame-accurate timecode to cue on the deck; "
+                 "recording time is the camera's wall clock. Re-capture with ≥15 s of good footage "
+                 "on both sides, drop the new file in, and re-run.")
         L.append("")
-        L.append("| recording time | damage | only copy |")
-        L.append("| --- | --- | --- |")
+        L.append("| recording time | tape TC | damage | only copy |")
+        L.append("| --- | --- | --- | --- |")
         for g in groups:
-            L.append("| %s | %s | %s |" % (_time(g[0].get("rec")), _kinds(g), g[0]["tag"]))
+            L.append("| %s | %s | %s | %s |"
+                     % (_time(g[0].get("rec")), _tc(g[0].get("tc")), _kinds(g), g[0]["tag"]))
     L.append("")
 
     # genuine gaps (missing in every capture) — worse than a residual
@@ -109,10 +116,11 @@ def render(plan):
                 "" if len(segs) - 1 == 1 else "s",
                 "" if not plan.bad_seams else ", ⚠ %d NOT tape-adjacent" % plan.bad_seams))
     L.append("")
-    L.append("| from | recording span |")
-    L.append("| --- | --- |")
+    L.append("| from | recording span | tape TC span |")
+    L.append("| --- | --- | --- |")
     for s in segs:
-        L.append("| %s | %s – %s |" % (s.tag, _time(s.rec), _time(s.rec_end)))
+        L.append("| %s | %s – %s | %s – %s |"
+                 % (s.tag, _time(s.rec), _time(s.rec_end), _tc(s.tc), _tc(s.tc_end)))
     L.append("")
 
     # divergences worth a human glance
@@ -122,11 +130,12 @@ def render(plan):
         L.append("Two clean copies of the same tape GOP differ byte-for-byte (intra-frame damage "
                  "the TS layer can't flag). The first copy is used; review if a spot looks wrong.")
         L.append("")
-        L.append("| recording time | copies |")
-        L.append("| --- | --- |")
+        L.append("| recording time | tape TC | copies |")
+        L.append("| --- | --- | --- |")
         for d in plan.divergences:
-            L.append("| %s | %s |"
-                     % (_time(d.get("rec")), ", ".join(c["tag"] for c in d["copies"])))
+            L.append("| %s | %s | %s |"
+                     % (_time(d.get("rec")), _tc(d.get("tc")),
+                        ", ".join(c["tag"] for c in d["copies"])))
         L.append("")
 
     # 3) output facts

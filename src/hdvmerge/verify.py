@@ -10,10 +10,11 @@ import os
 from . import TS
 from . import ts as T
 from .psi import find_pids
-from .aux import parse_rec
+from .aux import parse_aux
 
 
 def _aux_rec_near(path, stride, aux_pid, target, window=8 << 20):
+    """``(rec, tc)`` of the first readable AUX packet near ``target``, or ``(None, None)``."""
     a = max(0, target - window // 2)
     with open(path, "rb") as f:
         f.seek(a)
@@ -26,13 +27,13 @@ def _aux_rec_near(path, stride, aux_pid, target, window=8 << 20):
             if T.pid(pkt) == aux_pid and T.pusi(pkt):
                 ps = T.payload_start(pkt)
                 if ps is not None:
-                    rec = parse_rec(pkt[ps:])
+                    rec, tc = parse_aux(pkt[ps:])
                     if rec:
-                        return rec
+                        return rec, tc
             pos += stride
         else:
             pos += 1
-    return None
+    return None, None
 
 
 def verify(path):
@@ -47,7 +48,8 @@ def verify(path):
         info["error"] = "no Sony AUX stream (0xA1/0xA0) present"
         return False, info
     size = os.path.getsize(path)
-    head = _aux_rec_near(path, framing["stride"], apid, size // 50)
-    tail = _aux_rec_near(path, framing["stride"], apid, size - size // 50)
+    head, head_tc = _aux_rec_near(path, framing["stride"], apid, size // 50)
+    tail, tail_tc = _aux_rec_near(path, framing["stride"], apid, size - size // 50)
     info["rec_head"], info["rec_tail"] = head, tail
+    info["tc_head"], info["tc_tail"] = head_tc, tail_tc
     return bool(head and tail), info

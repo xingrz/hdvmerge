@@ -94,9 +94,11 @@ def _analyse(files, decode, cache_dir=None, use_cache=True):
         dec = sum(g.get("dec", 0) for g in idx.gops)
         recs = [g["rec"] for g in idx.gops if g.get("rec")]
         span = ("%s … %s" % (recs[0], recs[-1])) if recs else "no AUX time"
+        tcs = [g["tc"] for g in idx.gops if g.get("tc")]
+        tcspan = ("  [TC %s … %s]" % (tcs[0], tcs[-1])) if tcs else ""
         extra = ", dec=%d" % dec if idx.decoded else ""
-        print("  %-22s indexed: %d gops, cc=%d tei=%d%s, %s"
-              % (idx.tag, len(idx.gops), cc, tei, extra, span))
+        print("  %-22s indexed: %d gops, cc=%d tei=%d%s, %s%s"
+              % (idx.tag, len(idx.gops), cc, tei, extra, span, tcspan))
 
     rep = scanmod.analyze(files, decode=decode, cache_dir=cache_dir, use_cache=use_cache,
                           on_progress=bar, on_file=on_file)
@@ -139,9 +141,10 @@ def cmd_run(args):
     with open(report_path, "w") as f:
         f.write(md)
     ok, info = verifymod.verify(out)
-    print("wrote %s (%.2f GB) and %s — AUX recording timecode %s (head %s, tail %s)"
+    print("wrote %s (%.2f GB) and %s — AUX recording timecode %s (head %s / TC %s, tail %s / TC %s)"
           % (out, os.path.getsize(out) / 1e9, os.path.basename(report_path),
-             "OK" if ok else "MISSING", info.get("rec_head"), info.get("rec_tail")))
+             "OK" if ok else "MISSING", info.get("rec_head"), info.get("tc_head"),
+             info.get("rec_tail"), info.get("tc_tail")))
     return 0 if ok else 1
 
 

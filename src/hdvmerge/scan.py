@@ -21,8 +21,8 @@ from collections import Counter, defaultdict
 from . import TS
 from .psi import find_pids
 from .gop import GopSplitter, parse_pts
-from .aux import parse_rec
-from .model import FileIndex, Report, index_path, save_index, load_index
+from .aux import parse_aux
+from .model import FileIndex, Report, INDEX_VERSION, index_path, save_index, load_index
 
 
 def fingerprint(path):
@@ -50,6 +50,7 @@ def scan_file(path, on_progress=None):
     feed = split.feed
     aux = []
     last_cc = None
+    pending_disc = False     # set by an AF-only video disc marker: the next CC jump is signalled
     fps = 25.0
     READ = stride * 65536
     with open(path, "rb") as f:
@@ -70,28 +71,32 @@ def scan_file(path, on_progress=None):
                 if p == vpid:
                     b3 = chunk[base + 3]
                     afc = (b3 >> 4) & 0x3
+                    this_disc = afc >= 2 and chunk[base + 4] and (chunk[base + 5] & 0x80)
                     if afc & 1:
                         ps = base + 4 if afc == 1 else base + 5 + chunk[base + 4]
                         if ps < base + TS:
                             cc_now = b3 & 0x0F
-                            disc = afc >= 2 and chunk[base + 4] and (chunk[base + 5] & 0x80)
+                            disc = this_disc or pending_disc
                             cc_err = 1 if (last_cc is not None and not disc
                                            and cc_now != ((last_cc + 1) & 0x0F)) else 0
                             last_cc = cc_now
+                            pending_disc = False
                             pusi = b1 & 0x40
                             payload = chunk[ps:base + TS]
                             pts = parse_pts(payload) if pusi else None
                             feed(chunk_off + base, 1 if pusi else 0, payload,
                                  1 if (b1 & 0x80) else 0, cc_err, pts)
+                    elif this_disc:
+                        pending_disc = True       # AF-only seam marker; arms the next CC check
                 elif apid is not None and p == apid and (b1 & 0x40):
                     b3 = chunk[base + 3]
                     afc = (b3 >> 4) & 0x3
                     if afc & 1:
                         ps = base + 4 if afc == 1 else base + 5 + chunk[base + 4]
                         if ps < base + TS:
-                            rec = parse_rec(chunk[ps:base + TS])
+                            rec, tc = parse_aux(chunk[ps:base + TS])
                             if rec:
-                                aux.append((chunk_off + base, rec))
+                                aux.append((chunk_off + base, rec, tc))
                 base += stride
             split.flush()
             chunk_off += len(chunk)
@@ -107,15 +112,19 @@ def scan_file(path, on_progress=None):
 
 
 def _attach_rec(gops, aux):
+    """Attach to each GOP the recording time (``rec``) and tape timecode (``tc``) of the AUX
+    packet nearest its start offset. AUX entries are ``(offset, rec, tc)``."""
     if not aux:
         for g in gops:
             g["rec"] = None
+            g["tc"] = None
         return
     aoff = [a[0] for a in aux]
     for g in gops:
         k = bisect.bisect_left(aoff, g["off"])
         cand = [x for x in (k - 1, k) if 0 <= x < len(aux)]
-        g["rec"] = min((aux[x] for x in cand), key=lambda a: abs(a[0] - g["off"]))[1]
+        best = min((aux[x] for x in cand), key=lambda a: abs(a[0] - g["off"]))
+        g["rec"], g["tc"] = best[1], best[2]
 
 
 def _decode(idx, path):
@@ -141,7 +150,7 @@ def ensure_index(path, decode=False, force=False, cache_dir=None, use_cache=True
     fp = fingerprint(path)
     if use_cache and not force and os.path.exists(ip):
         idx = load_index(ip)
-        if idx.fingerprint == fp:
+        if idx.fingerprint == fp and idx.version == INDEX_VERSION:
             note = "cached"
             if decode and not idx.decoded:
                 _decode(idx, path)

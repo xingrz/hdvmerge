@@ -95,6 +95,7 @@ def build_plan(report):
             divergences.append({
                 "frame": frame_next,
                 "rec": F[interior[0][0]]["gops"][interior[0][1]].get("rec"),
+                "tc": F[interior[0][0]]["gops"][interior[0][1]].get("tc"),
                 "copies": [{"tag": Q, "gop": cj, "h": F[Q]["H"][cj]} for Q, cj in interior],
             })
         # decide the true next tape GOP: trust same-file contiguity when it is clean, else the
@@ -133,6 +134,8 @@ def build_plan(report):
         sg.nbytes = sg.end - sg.off
         sg.rec = g[sg.j0].get("rec")
         sg.rec_end = g[sg.j1].get("rec")
+        sg.tc = g[sg.j0].get("tc")
+        sg.tc_end = g[sg.j1].get("tc")
 
     # residuals: emitted GOPs still damaged (no clean copy anywhere)
     residuals = []
@@ -141,10 +144,11 @@ def build_plan(report):
         g = F[sg.tag]["gops"]
         for j in range(sg.j0, sg.j1 + 1):
             if F[sg.tag]["bad"][j]:
-                residuals.append({"frame": frame, "rec": g[j].get("rec"), "tag": sg.tag,
-                                  "gop": j, "cc": g[j]["cc"], "tei": g[j]["tei"],
+                residuals.append({"frame": frame, "rec": g[j].get("rec"), "tc": g[j].get("tc"),
+                                  "tag": sg.tag, "gop": j, "cc": g[j]["cc"], "tei": g[j]["tei"],
                                   "dec": g[j].get("dec", 0)})
             frame += g[j]["npic"]
 
     return Plan(segments=segs, residuals=residuals, divergences=divergences,
-                gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams)
+                gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
+                video_pid=report.source(chain[0]).video_pid)

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from hdvmerge import scan as scanmod, plan as planmod, build as buildmod, verify as verifymod, model
+from hdvmerge import ts as tsmod
 from . import fixtures as fx
 
 
@@ -43,6 +44,8 @@ class TestEndToEnd(unittest.TestCase):
         idx = model.load_index(ip)
         self.assertEqual(len(idx.gops), 40)
         self.assertEqual(idx.fingerprint, scanmod.fingerprint(files[0]))
+        self.assertEqual(idx.version, model.INDEX_VERSION)
+        self.assertEqual(idx.gops[0]["tc"], "07:00:00:00")   # tape TC attached per GOP
 
     def test_unchanged_source_is_not_reindexed(self):
         files = self._captures()
@@ -67,17 +70,24 @@ class TestEndToEnd(unittest.TestCase):
 
         out = os.path.join(self.tmp, "merged.m2t")
         buildmod.build(plan, out)
+        self.assertGreaterEqual(len(plan.segments), 2)   # at least one seam exists to mark
+        marker = tsmod.make_disc_marker(plan.video_pid)
         expect = bytearray()
-        for sg in plan.segments:
+        for i, sg in enumerate(plan.segments):
+            if i > 0:
+                expect += marker                         # build inserts a disc marker per seam
             with open(sg.src, "rb") as f:
                 f.seek(sg.off)
                 expect += f.read(sg.end - sg.off)
-        self.assertEqual(_read(out), bytes(expect))      # build is exact
+        self.assertEqual(_read(out), bytes(expect))      # build = exact source bytes + seam markers
 
-        self.assertEqual(len(scanmod.scan_file(out).gops), 50)       # whole tape, 50 GOPs
+        out_idx = scanmod.scan_file(out)
+        self.assertEqual(len(out_idx.gops), 50)          # whole tape, 50 GOPs (markers add none)
+        self.assertEqual(sum(g["cc"] for g in out_idx.gops), 0)  # seam CC jumps are signalled, not flagged
         ok, info = verifymod.verify(out)
         self.assertTrue(ok)
         self.assertTrue(info["rec_head"].startswith("2007-01-01 09:00:0"))
+        self.assertTrue(info["tc_head"].startswith("07:00:0"))       # tape TC survived the build
 
     def test_routes_around_overlap_damage(self):
         rep = scanmod.analyze(self._captures(dmgA={24: "cc"}))

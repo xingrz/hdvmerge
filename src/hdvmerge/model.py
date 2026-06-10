@@ -17,9 +17,9 @@ from typing import Optional
 import json
 import os
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2   # v2 adds the per-GOP tape timecode (`tc`); a v1 cache is rebuilt on load
 
-# A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec
+# A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec tc
 
 
 @dataclass
@@ -32,6 +32,7 @@ class FileIndex:
     fps: float
     decoded: bool                  # whether the ffmpeg decode pass has filled `dec`
     gops: list = field(default_factory=list)
+    version: int = INDEX_VERSION   # schema version of a loaded cache; a mismatch forces a rebuild
 
     @property
     def path_hint(self):
@@ -65,7 +66,7 @@ def load_index(path) -> FileIndex:
         gops = [json.loads(line) for line in f if line.strip()]
     return FileIndex(tag=meta["tag"], size=meta["size"], fingerprint=meta["fingerprint"],
                      video_pid=meta["video_pid"], aux_pid=meta["aux_pid"], fps=meta["fps"],
-                     decoded=meta["decoded"], gops=gops)
+                     decoded=meta["decoded"], gops=gops, version=meta.get("v", 1))
 
 
 # --- in-memory only (derived fresh from the indices every run) ---
@@ -96,6 +97,8 @@ class Segment:
     nbytes: int
     rec: Optional[str] = None        # recording time of the segment's first GOP
     rec_end: Optional[str] = None    # recording time of the segment's last GOP
+    tc: Optional[str] = None         # tape timecode of the segment's first GOP
+    tc_end: Optional[str] = None     # tape timecode of the segment's last GOP
 
 
 @dataclass
@@ -107,3 +110,4 @@ class Plan:
     total_frames: int = 0
     fps: float = 25.0
     bad_seams: int = 0
+    video_pid: Optional[int] = None   # for build's seam discontinuity markers
