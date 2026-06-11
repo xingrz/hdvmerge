@@ -86,6 +86,16 @@ class TestJsonOut(unittest.TestCase):
         self.assertTrue(any(c["tag"] == "capA"
                             for dv in d["divergences"] for c in dv["copies"]))
 
+    def test_source_carries_its_own_damage_runs(self):
+        d = self._analysis(dmgA={5: "cc"})           # capA damaged at tape 5; capB clean
+        cap_a = next(s for s in d["sources"] if s["tag"] == "capA")
+        cap_b = next(s for s in d["sources"] if s["tag"] == "capB")
+        self.assertTrue(cap_a["damage"], "capA should list its own damaged run")
+        self.assertGreater(cap_a["damage"][0]["cc"], 0)
+        self.assertIsNotNone(cap_a["damage"][0]["tc0"])
+        self.assertEqual(cap_b["damage"], [])        # capB is clean, so no own-damage runs
+        self.assertEqual(json.loads(json.dumps(d)), d)   # still JSON round-trips
+
     def test_cli_json_emits_exactly_one_object_on_stdout(self):
         files = self._captures()
         out, err = io.StringIO(), io.StringIO()

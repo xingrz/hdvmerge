@@ -17,9 +17,36 @@ from . import __version__
 SCHEMA = "hdvmerge.analysis/1"
 
 
+def _source_damage(gops):
+    """Contiguous runs of damaged GOPs (continuity break / transport error / decode error) within
+    this capture, labelled by tape TC — i.e. where the *capture itself* is bad, independent of
+    whether another capture covers that tape position cleanly. (The plan's residuals, by contrast,
+    are only where no capture has a clean copy.) A consumer can show these on the capture's own
+    lane."""
+    spans = []
+    cur = None
+    for g in gops:
+        if g["cc"] > 0 or g["tei"] > 0 or g.get("dec", 0) > 0:
+            if cur is None:
+                cur = {"tc0": g.get("tc"), "tc1": g.get("tc"),
+                       "cc": 0, "tei": 0, "dec": 0, "ngops": 0}
+            cur["tc1"] = g.get("tc")
+            cur["cc"] += g["cc"]
+            cur["tei"] += g["tei"]
+            cur["dec"] += g.get("dec", 0)
+            cur["ngops"] += 1
+        elif cur is not None:
+            spans.append(cur)
+            cur = None
+    if cur is not None:
+        spans.append(cur)
+    return spans
+
+
 def _source(idx, shift):
-    """Per-capture summary: its place on the tape axis (``shift``), damage-flag totals, and the
-    recording-time / tape-TC span it covers (read from the GOP index, never extrapolated)."""
+    """Per-capture summary: its place on the tape axis (``shift``), damage-flag totals, the
+    recording-time / tape-TC span it covers (read from the GOP index, never extrapolated), and
+    ``damage`` — the runs where this capture is itself damaged (see :func:`_source_damage`)."""
     gops = idx.gops
     recs = [g["rec"] for g in gops if g.get("rec")]
     tcs = [g["tc"] for g in gops if g.get("tc")]
@@ -38,6 +65,7 @@ def _source(idx, shift):
         "rec1": recs[-1] if recs else None,
         "tc0": tcs[0] if tcs else None,
         "tc1": tcs[-1] if tcs else None,
+        "damage": _source_damage(gops),
     }
 
 
