@@ -23,9 +23,43 @@ from collections import Counter
 from datetime import datetime
 
 from .model import Plan, Segment
+from .ts import detect_framing
 
 EDGE = 12              # GOPs near a capture's head/tail to avoid (capture can corrupt edges)
 CLEAN_RUN_CAP = 120
+
+
+def _first_pcr(buf):
+    """First PCR (seconds) in a TS buffer, or None. The PCR is the tape's own clock, carried verbatim
+    by every capture and monotone along the whole tape — the reliable coordinate for ordering islands
+    when the wall-clock `rec` is wrong (a mis-set camera date) and tape TC resets per recording."""
+    fr = detect_framing(buf[:1 << 16])
+    if fr is None:
+        return None
+    st = fr["stride"]
+    base = None
+    for s in range(min(st * 2, max(0, len(buf) - st * 6))):
+        if all(buf[s + k * st] == 0x47 for k in range(6)):   # 6 packets in step = a true sync lock
+            base = s
+            break
+    if base is None:
+        return None
+    for p in range(base, len(buf) - st, st):
+        if buf[p] != 0x47:
+            break
+        if (buf[p + 3] >> 4) & 3 in (2, 3) and buf[p + 4] >= 7 and (buf[p + 5] & 0x10):
+            b = buf[p + 6:p + 12]
+            return ((b[0] << 25) | (b[1] << 17) | (b[2] << 9) | (b[3] << 1) | (b[4] >> 7)) / 90000.0
+    return None
+
+
+def _segment_pcr(seg):
+    try:
+        with open(seg.src, "rb") as f:
+            f.seek(seg.off)
+            return _first_pcr(f.read(1 << 18))
+    except OSError:
+        return None
 
 
 def _tc_seconds(tc, fps):
@@ -260,18 +294,25 @@ def build_plan(report):
 
 
 def _assemble_runs(run_segs):
-    """Interleave the per-island walk runs into one tape-ordered sequence by **wall-clock rec** — a
-    monotone tape coordinate. (Tape TC resets per recording, so it can't order islands: a re-capture
-    fragment that fills a gap mid-reel would sort by its low TC and append at the END, sending the
-    clock backwards and breaking a player's duration/seek.) `rec` is the camera clock the tape
-    carries verbatim and advances along the whole tape. A k-way merge keeps every run internally
-    ordered (the walk order is authoritative) and drops each island into its tape position by rec. A
-    run change (an island boundary) carries ``gap_before`` — a real discontinuity the build marks and
-    never re-phases across. Nothing is stranded, so ``unused`` stays empty."""
+    """Interleave the per-island walk runs into one tape-ordered sequence by the **PCR** (the tape's
+    own clock), so the merged file's timeline is monotone end to end.
+
+    Neither of the easy coordinates works: tape TC resets per recording, and the wall-clock `rec` can
+    be plain wrong (a capture made with a mis-set camera date sorts to the wrong place). The PCR is
+    carried verbatim on the tape and increases along the whole reel regardless, so a re-capture
+    fragment drops into its true position. A k-way merge keeps every run internally ordered (the walk
+    order is authoritative) and emits whichever run's head GOP has the earliest PCR. A run change (an
+    island boundary) carries ``gap_before`` — a real discontinuity the build marks and never
+    re-phases across. ``rec`` is the fallback when a stream carries no PCR. Nothing is stranded, so
+    ``unused`` stays empty."""
     runs = [r for r in run_segs if r]
+    pcr = {id(s): _segment_pcr(s) for r in runs for s in r}
+    use_pcr = all(pcr[id(s)] is not None for r in runs for s in r)
 
     def head_key(ri):
         s = runs[ri][pos[ri]]
+        if use_pcr:
+            return (pcr[id(s)],)
         return (s.rec is None, s.rec or "", s.tc or "")
 
     pos = [0] * len(runs)

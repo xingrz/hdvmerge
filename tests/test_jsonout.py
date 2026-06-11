@@ -131,6 +131,19 @@ class TestJsonOut(unittest.TestCase):
                     "gap_before": True}]
         self.assertEqual(planmod._lost_spans(emitted, 25.0), [])
 
+    def test_first_pcr_reads_the_tape_clock(self):
+        pcr_base = 90000   # 1.0 s at 90 kHz
+        af = bytes([7, 0x10,
+                    (pcr_base >> 25) & 0xFF, (pcr_base >> 17) & 0xFF, (pcr_base >> 9) & 0xFF,
+                    (pcr_base >> 1) & 0xFF, (pcr_base & 1) << 7, 0])
+        pkt = bytes([0x47, 0x01, 0x00, 0x20]) + af          # afc=0b10 (adaptation field only)
+        pkt = pkt + b"\xff" * (188 - len(pkt))
+        self.assertAlmostEqual(planmod._first_pcr(pkt * 10), 1.0, places=3)
+
+    def test_first_pcr_is_none_without_a_pcr(self):
+        pkt = bytes([0x47, 0x01, 0x00, 0x10]) + b"\x00" * 184   # payload only, no PCR
+        self.assertIsNone(planmod._first_pcr(pkt * 10))
+
     def test_cli_json_emits_exactly_one_object_on_stdout(self):
         files = self._captures()
         out, err = io.StringIO(), io.StringIO()
