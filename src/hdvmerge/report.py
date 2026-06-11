@@ -6,7 +6,32 @@ reassembled, then the output facts. It doubles as the final record once you acce
 remaining list. Internal checks (seam adjacency) only show up if something is wrong.
 """
 
+import unicodedata
+
 GAP_GOP_FRAMES = 12   # only for estimating a gap's duration in the report
+
+
+def _w(s):
+    """Terminal display width: CJK and full-width chars occupy two columns, the rest one.
+    Ambiguous-width chars (en-dash, arrows) count as one, matching the default terminal."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def _table(header, rows):
+    """A GitHub-flavored Markdown table whose columns are padded to line up when read as
+    plain text in a monospace terminal (CJK-aware). `header` and each row are cell lists;
+    returns the table's lines. Renderers ignore the padding; raw-text readers get aligned pipes."""
+    w = [_w(h) for h in header]
+    for r in rows:
+        for i, c in enumerate(r):
+            w[i] = max(w[i], _w(c))
+    w = [max(3, x) for x in w]
+    pad = lambda s, i: s + " " * (w[i] - _w(s))
+    out = ["| " + " | ".join(pad(header[i], i) for i in range(len(w))) + " |",
+           "| " + " | ".join("-" * w[i] for i in range(len(w))) + " |"]
+    for r in rows:
+        out.append("| " + " | ".join(pad(r[i], i) for i in range(len(w))) + " |")
+    return out
 
 
 def _hms(frames, fps):
@@ -88,12 +113,12 @@ def render(plan):
                  "content is **not** in the merged file. Add an overlapping capture across the gap, "
                  "or merge them separately.")
         L.append("")
-        L.append("| source | recording span | tape TC span | length |")
-        L.append("| --- | --- | --- | --- |")
-        for u in plan.unused_sources:
-            L.append("| %s | %s – %s | %s – %s | %s |"
-                     % (u["tag"], _time(u["rec0"]), _time(u["rec1"]),
-                        _tc(u["tc0"]), _tc(u["tc1"]), _hms(u["frames"], fps)))
+        L += _table(["source", "recording span", "tape TC span", "length"],
+                    [[u["tag"],
+                      "%s – %s" % (_time(u["rec0"]), _time(u["rec1"])),
+                      "%s – %s" % (_tc(u["tc0"]), _tc(u["tc1"])),
+                      _hms(u["frames"], fps)]
+                     for u in plan.unused_sources])
         L.append("")
 
     # 1) the headline: re-capture list
@@ -113,11 +138,9 @@ def render(plan):
                  "recording time is the camera's wall clock. Re-capture with ≥15 s of good footage "
                  "on both sides, drop the new file in, and re-run.")
         L.append("")
-        L.append("| recording time | tape TC | damage | only copy |")
-        L.append("| --- | --- | --- | --- |")
-        for g in groups:
-            L.append("| %s | %s | %s | %s |"
-                     % (_time(g[0].get("rec")), _tc(g[0].get("tc")), _kinds(g), g[0]["tag"]))
+        L += _table(["recording time", "tape TC", "damage", "only copy"],
+                    [[_time(g[0].get("rec")), _tc(g[0].get("tc")), _kinds(g), g[0]["tag"]]
+                     for g in groups])
     L.append("")
 
     # genuine gaps (missing in every capture) — worse than a residual
@@ -144,15 +167,16 @@ def render(plan):
                  "signalled (a decoder resets cleanly there), and the timeline jumps by the missing "
                  "stretch.")
     L.append("")
-    L.append("| from | recording span | tape TC span |")
-    L.append("| --- | --- | --- |")
+    rows = []
     prev_tc_end = None
     for s in segs:
         if s.gap_before:
-            L.append("| ⟂ **gap** | _(missing)_ | %s → %s |" % (_tc(prev_tc_end), _tc(s.tc)))
-        L.append("| %s | %s – %s | %s – %s |"
-                 % (s.tag, _time(s.rec), _time(s.rec_end), _tc(s.tc), _tc(s.tc_end)))
+            rows.append(["⟂ **gap**", "_(missing)_", "%s → %s" % (_tc(prev_tc_end), _tc(s.tc))])
+        rows.append([s.tag,
+                     "%s – %s" % (_time(s.rec), _time(s.rec_end)),
+                     "%s – %s" % (_tc(s.tc), _tc(s.tc_end))])
         prev_tc_end = s.tc_end
+    L += _table(["from", "recording span", "tape TC span"], rows)
     L.append("")
 
     # divergences worth a human glance
@@ -162,12 +186,10 @@ def render(plan):
         L.append("Two clean copies of the same tape GOP differ byte-for-byte (intra-frame damage "
                  "the TS layer can't flag). The first copy is used; review if a spot looks wrong.")
         L.append("")
-        L.append("| recording time | tape TC | copies |")
-        L.append("| --- | --- | --- |")
-        for d in plan.divergences:
-            L.append("| %s | %s | %s |"
-                     % (_time(d.get("rec")), _tc(d.get("tc")),
-                        ", ".join(c["tag"] for c in d["copies"])))
+        L += _table(["recording time", "tape TC", "copies"],
+                    [[_time(d.get("rec")), _tc(d.get("tc")),
+                      ", ".join(c["tag"] for c in d["copies"])]
+                     for d in plan.divergences])
         L.append("")
 
     # 3) output facts
