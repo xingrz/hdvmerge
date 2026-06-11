@@ -8,6 +8,12 @@ Greedy walk along the tape, one GOP at a time:
     the same tape position, located by content hash so a dropped/duplicated GOP anywhere else
     cannot misalign the seam (the true next GOP is decided by hash majority across copies).
 
+The captures can split into several tape islands with no hash bridge between them (damage/indels,
+or genuinely disjoint takes), so the walk is run once per island — seeded from each capture whose
+tape is not already covered — and the islands are stitched together by tape TC. This keeps the
+result independent of which file sorts first: a stray clip can no longer strand the rest, and each
+island repairs itself internally from every overlapping copy.
+
 Where two clean copies of the same tape GOP disagree byte-for-byte, one carries intra-frame
 damage the TS layer can't flag; these are recorded in ``divergences`` for review (and the plan
 is hand-editable). plan.json is the source of truth for ``build``.
@@ -94,6 +100,7 @@ def build_plan(report):
         return Plan(segments=[])
     fps = report.source(chain[0]).fps or 25.0
     F = _prep(report)
+    sum_n = sum(F[t]["n"] for t in chain)
 
     def locate(Q, rt, rj):
         h = F[rt]["H"][rj]
@@ -121,87 +128,109 @@ def build_plan(report):
                 0 if Q == t else 1,
                 -clean_run(Q, cj))
 
-    out = [(chain[0], 0)]
-    divergences = []
-    frame = 0
-    while True:
-        t, j = out[-1]
-        same = (t, j + 1) if j + 1 < F[t]["n"] else None
-        cands = []
-        if same:
-            cands.append(same)
-        for Q in chain:
-            if Q == t:
-                continue
-            c = locate(Q, t, j)
-            if c is not None and c + 1 < F[Q]["n"]:
-                cands.append((Q, c + 1))
-        if not cands:
-            break
-        # record a divergence: two clean INTERIOR copies of the same next tape GOP that disagree
-        # byte-wise. Edge GOPs are excluded — a capture's first/last GOP has a structurally
-        # different hash (its ES slice runs to a file boundary, not the next GOP), which is not
-        # content damage, and edges are avoided by the walk anyway.
-        clean = [c for c in cands if not F[c[0]]["bad"][c[1]]]
-        interior = [c for c in clean if min(c[1], F[c[0]]["n"] - 1 - c[1]) >= EDGE]
-        if len({F[Q]["H"][cj] for Q, cj in interior}) > 1:
-            frame_next = frame + F[t]["gops"][j]["npic"]
-            divergences.append({
-                "frame": frame_next,
-                "rec": F[interior[0][0]]["gops"][interior[0][1]].get("rec"),
-                "tc": F[interior[0][0]]["gops"][interior[0][1]].get("tc"),
-                "copies": [{"tag": Q, "gop": cj, "h": F[Q]["H"][cj]} for Q, cj in interior],
-            })
-        # decide the true next tape GOP: trust same-file contiguity when it is clean, else the
-        # hash held by the most clean copies
-        if same is not None and not F[t]["bad"][same[1]]:
-            true_h = F[t]["H"][same[1]]
-        else:
-            pool = clean or cands
-            true_h = Counter(F[Q]["H"][cj] for Q, cj in pool).most_common(1)[0][0]
-        group = [c for c in cands if F[c[0]]["H"][c[1]] == true_h]
-        cleang = [c for c in group if not F[c[0]]["bad"][c[1]]]
-        nxt = min(cleang or group, key=lambda c: score(c, t))
-        frame += F[t]["gops"][j]["npic"]
-        out.append(nxt)
+    covered = set()    # clean GOP hashes already emitted, so a later island can't re-emit that tape
+    div_at = {}        # emitted (tag, gop) -> divergence info; output frame is filled in at assembly
 
-    # adjacency sanity: every cross-file seam must be tape-adjacent
+    def walk(start, start_j):
+        out = [(start, start_j)]
+        while len(out) <= sum_n:
+            t, j = out[-1]
+            same = (t, j + 1) if j + 1 < F[t]["n"] else None
+            cands = []
+            if same:
+                cands.append(same)
+            for Q in chain:
+                if Q == t:
+                    continue
+                c = locate(Q, t, j)
+                if c is not None and c + 1 < F[Q]["n"]:
+                    cands.append((Q, c + 1))
+            if not cands:
+                break
+            # a divergence: two clean INTERIOR copies of the same next tape GOP that disagree
+            # byte-wise. Edge GOPs are excluded — a capture's first/last GOP has a structurally
+            # different hash (its ES slice runs to a file boundary, not the next GOP), which is not
+            # content damage, and edges are avoided by the walk anyway.
+            clean = [c for c in cands if not F[c[0]]["bad"][c[1]]]
+            interior = [c for c in clean if min(c[1], F[c[0]]["n"] - 1 - c[1]) >= EDGE]
+            # decide the true next tape GOP: trust same-file contiguity when it is clean, else the
+            # hash held by the most clean copies
+            if same is not None and not F[t]["bad"][same[1]]:
+                true_h = F[t]["H"][same[1]]
+            else:
+                pool = clean or cands
+                true_h = Counter(F[Q]["H"][cj] for Q, cj in pool).most_common(1)[0][0]
+            group = [c for c in cands if F[c[0]]["H"][c[1]] == true_h]
+            cleang = [c for c in group if not F[c[0]]["bad"][c[1]]]
+            nxt = min(cleang or group, key=lambda c: score(c, t))
+            # stop where the walk re-enters tape an earlier island already emitted (no duplicates);
+            # any tape beyond it that is still uncovered will be picked up by its own seed
+            if not F[nxt[0]]["bad"][nxt[1]] and F[nxt[0]]["H"][nxt[1]] in covered:
+                break
+            if len({F[Q]["H"][cj] for Q, cj in interior}) > 1:
+                src = interior[0]
+                div_at[nxt] = {"rec": F[src[0]]["gops"][src[1]].get("rec"),
+                               "tc": F[src[0]]["gops"][src[1]].get("tc"),
+                               "copies": [{"tag": Q, "gop": cj, "h": F[Q]["H"][cj]}
+                                          for Q, cj in interior]}
+            out.append(nxt)
+        return out
+
+    # Cover EVERY tape island, not just chain[0]'s. A single walk from one seed only ever covers that
+    # seed's island, so whichever capture sorted first used to decide the whole result and could
+    # strand all the rest (their clean copies then repaired no one, and a stray clip could silently
+    # drop a whole reel). Instead seed a walk from each capture whose tape is not already covered — a
+    # byte-identical re-capture (>=90% covered) is skipped so it isn't emitted as a twin island, and a
+    # walk stops where it re-enters covered tape, so nothing is emitted twice. Order is by `chain`
+    # (shift order) only for determinism; coverage no longer depends on which capture seeds first.
+    runs = []
+    for seed in chain:
+        clean_js = [j for j in range(F[seed]["n"]) if not F[seed]["bad"][j]]
+        uncov = [j for j in clean_js if F[seed]["H"][j] not in covered]
+        if clean_js and len(uncov) < 0.1 * len(clean_js):
+            continue
+        path = walk(seed, uncov[0] if uncov else 0)
+        for (t, j) in path:
+            if not F[t]["bad"][j]:
+                covered.add(F[t]["H"][j])
+        runs.append(path)
+
+    def coalesce(path):
+        rs = []
+        for (t, j) in path:
+            if rs and rs[-1].tag == t and j == rs[-1].j1 + 1:
+                rs[-1].j1 = j
+            else:
+                rs.append(Segment(tag=t, src=F[t]["s"].src_path, off=0, end=0, j0=j, j1=j,
+                                  ngops=0, nbytes=0))
+        for sg in rs:
+            g = F[sg.tag]["gops"]
+            sg.off = g[sg.j0]["off"]
+            sg.end = g[sg.j1]["end"]
+            sg.ngops = sg.j1 - sg.j0 + 1
+            sg.nbytes = sg.end - sg.off
+            sg.rec = g[sg.j0].get("rec")
+            sg.rec_end = g[sg.j1].get("rec")
+            sg.tc = g[sg.j0].get("tc")
+            sg.tc_end = g[sg.j1].get("tc")
+        return rs
+
+    segs, unused = _assemble_runs([coalesce(p) for p in runs])
+
+    # adjacency sanity: every cross-file seam that is NOT an island boundary must be tape-adjacent
     bad_seams = 0
-    for k in range(1, len(out)):
-        (pt, pj), (ct, cj) = out[k - 1], out[k]
-        if pt != ct and cj > 0 and F[ct]["H"][cj - 1] != F[pt]["H"][pj]:
+    for k in range(1, len(segs)):
+        prev, cur = segs[k - 1], segs[k]
+        if cur.gap_before:
+            continue
+        if cur.j0 > 0 and F[cur.tag]["H"][cur.j0 - 1] != F[prev.tag]["H"][prev.j1]:
             bad_seams += 1
 
-    # coalesce into byte-range segments
-    segs = []
-    for (t, j) in out:
-        if segs and segs[-1].tag == t and j == segs[-1].j1 + 1:
-            segs[-1].j1 = j
-        else:
-            segs.append(Segment(tag=t, src=F[t]["s"].src_path, off=0, end=0, j0=j, j1=j,
-                                 ngops=0, nbytes=0))
-    for sg in segs:
-        g = F[sg.tag]["gops"]
-        sg.off = g[sg.j0]["off"]
-        sg.end = g[sg.j1]["end"]
-        sg.ngops = sg.j1 - sg.j0 + 1
-        sg.nbytes = sg.end - sg.off
-        sg.rec = g[sg.j0].get("rec")
-        sg.rec_end = g[sg.j1].get("rec")
-        sg.tc = g[sg.j0].get("tc")
-        sg.tc_end = g[sg.j1].get("tc")
-
-    # find-back: a source the greedy walk never reached is a separate tape island (no overlapping
-    # GOP to bridge it by hash). Stitch each back in by *tape TC* — but only when the tape TC AND
-    # the wall-clock both agree it sits as one disjoint block cleanly before or after the assembled
-    # chain (so placement is reliable); otherwise leave it flagged in `unused`. A stitched island is
-    # a real discontinuity, so it carries `gap_before` (build marks it and never re-phases across it).
-    segs, unused = _stitch_islands(segs, chain, F)
-
-    # residuals: emitted GOPs still damaged (no clean copy anywhere). `emitted_cc/tei` sum the
-    # TS-level breaks the build copies out — the output self-check expects exactly these and no more
-    # (re-phasing must introduce no new break at any seam).
+    # residuals (emitted GOPs still damaged — no clean copy anywhere), divergences resolved to their
+    # output frame, and `emitted_cc/tei` (the TS-level breaks the build copies out), walking the
+    # assembled segments in output order.
     residuals = []
+    divergences = []
     emitted = []
     emitted_cc = emitted_tei = 0
     frame = 0
@@ -214,6 +243,10 @@ def build_plan(report):
             emitted_tei += g[j]["tei"]
             emitted.append({"tc": g[j].get("tc"), "rec": g[j].get("rec"), "frame": frame,
                             "tag": sg.tag, "gap_before": (j == sg.j0 and sg.gap_before)})
+            d = div_at.get((sg.tag, j))
+            if d is not None:
+                divergences.append({"frame": frame, "rec": d["rec"], "tc": d["tc"],
+                                    "copies": d["copies"]})
             if fo["bad"][j]:
                 residuals.append({"frame": frame, "rec": g[j].get("rec"), "tc": g[j].get("tc"),
                                   "tag": sg.tag, "gop": j, "cc": g[j]["cc"], "tei": g[j]["tei"],
@@ -226,45 +259,20 @@ def build_plan(report):
                 video_pid=report.source(chain[0]).video_pid, lost=_lost_spans(emitted, fps))
 
 
-def _stitch_islands(segs, chain, F):
-    """Place walk-unreached sources back into ``segs`` by tape TC. Returns ``(segs, unused)``: the
-    placed islands carry ``gap_before``; sources that can't be placed reliably stay in ``unused``."""
-    used = {sg.tag for sg in segs}
-    main_tc = [s.tc for s in segs if s.tc] + [s.tc_end for s in segs if s.tc_end]
-    main_rec = [s.rec for s in segs if s.rec] + [s.rec_end for s in segs if s.rec_end]
-    islands, unused = [], []
-    for t in chain:
-        if t in used:
-            continue
-        gp = F[t]["gops"]
-        entry = {"tag": t, "ngops": len(gp), "frames": sum(g["npic"] for g in gp),
-                 "tc0": gp[0].get("tc"), "tc1": gp[-1].get("tc"),
-                 "rec0": gp[0].get("rec"), "rec1": gp[-1].get("rec")}
-        tcs = [g["tc"] for g in gp if g.get("tc")]
-        recs = [g["rec"] for g in gp if g.get("rec")]
-        placed = False
-        if main_tc and main_rec and tcs and recs:
-            tlo, thi, rlo, rhi = min(tcs), max(tcs), min(recs), max(recs)
-            mtlo, mthi, mrlo, mrhi = min(main_tc), max(main_tc), min(main_rec), max(main_rec)
-            after = tlo > mthi and rlo > mrhi
-            before = thi < mtlo and rhi < mrlo
-            clash = any(not (thi < s.tc or tlo > s.tc_end) for _, s in islands)  # overlaps a placed island
-            if (after or before) and not clash:
-                islands.append((tlo, Segment(
-                    tag=t, src=F[t]["s"].src_path, off=gp[0]["off"], end=gp[-1]["end"],
-                    j0=0, j1=len(gp) - 1, ngops=len(gp), nbytes=gp[-1]["end"] - gp[0]["off"],
-                    rec=gp[0].get("rec"), rec_end=gp[-1].get("rec"),
-                    tc=gp[0].get("tc"), tc_end=gp[-1].get("tc"), gap_before=True)))
-                placed = True
-        if not placed:
-            unused.append(entry)
-    if not islands:
-        return segs, unused
-    runs = [(min(main_tc), segs)] + [(tlo, [seg]) for tlo, seg in islands]
-    runs.sort(key=lambda r: r[0])
-    out = []
-    for i, (_, rsegs) in enumerate(runs):
-        if i:
-            rsegs[0].gap_before = True
-        out.extend(rsegs)
-    return out, unused
+def _assemble_runs(run_segs):
+    """Order the per-island walk runs along the tape by TC and concatenate them; every island after
+    the first carries ``gap_before`` — a real discontinuity the build marks and never re-phases
+    across. Every capture has been walked into some run, so nothing is stranded; ``unused`` stays
+    empty (kept in the return for the contract)."""
+    keyed = []
+    for rs in run_segs:
+        if rs:
+            tcs = [s.tc for s in rs if s.tc]
+            keyed.append((min(tcs) if tcs else None, rs))
+    # islands with a tape TC sort by it; a TC-less island (pathological) trails in input order
+    keyed.sort(key=lambda k: (k[0] is None, k[0] or ""))
+    segs = []
+    for i, (_, rs) in enumerate(keyed):
+        rs[0].gap_before = bool(i)
+        segs.extend(rs)
+    return segs, []

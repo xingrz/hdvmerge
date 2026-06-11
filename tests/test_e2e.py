@@ -174,6 +174,31 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(len(oidx.gops), 40)
         self.assertEqual(sum(g["cc"] for g in oidx.gops), 0)    # gap is disc-signalled, capB re-phased
 
+    def test_a_stray_first_sorted_capture_does_not_strand_the_rest(self):
+        # cap0 sorts first but is a disjoint island [0,10); cap1 [20,50) is damaged at tape 35 where
+        # cap2 [30,60) is clean. A single walk seeded on cap0 used to strand cap1/cap2 — cap2 dropped
+        # (unused) and cap1's damage left as a residual. Every island must be walked: cap2 repairs
+        # cap1, and the result must not depend on cap0 sorting first.
+        self.tape = fx.simple_tape(60)
+        c0 = _write(self.tmp, "cap0.m2t", fx.render_capture(self.tape, 0, 10, (2007, 1, 1, 9, 0, 0)))
+        c1 = _write(self.tmp, "cap1.m2t",
+                    fx.render_capture(self.tape, 20, 50, (2007, 1, 1, 9, 0, 0), damage={35: "cc"}))
+        c2 = _write(self.tmp, "cap2.m2t", fx.render_capture(self.tape, 30, 60, (2007, 1, 1, 9, 0, 0)))
+        plan = planmod.build_plan(scanmod.analyze([c0, c1, c2]))
+        self.assertEqual(plan.unused_sources, [])               # nothing stranded
+        self.assertEqual(plan.residuals, [])                    # cap1's damage at tape 35 repaired by cap2
+        self.assertEqual({s.tag for s in plan.segments}, {"cap0", "cap1", "cap2"})
+
+    def test_byte_identical_recapture_is_not_emitted_twice(self):
+        # capA and a byte-identical re-capture of the same tape: the twin adds no new tape and must
+        # not be emitted as a duplicate island (it would double the output).
+        a = _write(self.tmp, "capA.m2t", fx.render_capture(self.tape, 0, 40, (2007, 1, 1, 9, 0, 0)))
+        twin = _write(self.tmp, "capA_twin.m2t",
+                      fx.render_capture(self.tape, 0, 40, (2007, 1, 1, 9, 0, 0)))
+        plan = planmod.build_plan(scanmod.analyze([a, twin]))
+        self.assertEqual(plan.total_frames, 40 * 4)            # the tape once, not twice
+        self.assertEqual(len([s for s in plan.segments if s.gap_before]), 0)
+
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")
         buildmod.build(plan, out)
