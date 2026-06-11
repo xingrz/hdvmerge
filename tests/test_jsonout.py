@@ -96,6 +96,19 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(cap_b["damage"], [])        # capB is clean, so no own-damage runs
         self.assertEqual(json.loads(json.dumps(d)), d)   # still JSON round-trips
 
+    def test_source_coverage_splits_at_a_tc_jump(self):
+        # a capture that drops ~6 s of content (a continuity break) -> two coverage segments
+        gops = [{"tc": "07:00:00:00"}, {"tc": "07:00:00:12"}, {"tc": "07:00:01:00"},
+                {"tc": "07:00:07:00"}, {"tc": "07:00:07:12"}]   # 01:00 -> 07:00 is a 6 s jump
+        segs = jsonout._source_coverage(gops, 25.0)
+        self.assertEqual(len(segs), 2)
+        self.assertEqual(segs[0], {"tc0": "07:00:00:00", "tc1": "07:00:01:00"})
+        self.assertEqual(segs[1], {"tc0": "07:00:07:00", "tc1": "07:00:07:12"})
+
+    def test_source_coverage_is_one_segment_when_contiguous(self):
+        gops = [{"tc": "07:00:00:00"}, {"tc": "07:00:00:12"}, {"tc": "07:00:01:00"}]
+        self.assertEqual(len(jsonout._source_coverage(gops, 25.0)), 1)
+
     def test_cli_json_emits_exactly_one_object_on_stdout(self):
         files = self._captures()
         out, err = io.StringIO(), io.StringIO()

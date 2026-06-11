@@ -43,6 +43,38 @@ def _source_damage(gops):
     return spans
 
 
+def _source_coverage(gops, fps):
+    """The contiguous tape-TC runs this capture actually holds. A capture can drop content at a
+    continuity break (its GOP timecodes then jump), so its coverage is NOT one solid span — split it
+    wherever the TC jumps (> ~1 s forward, or backward), so a consumer can show the real gaps on the
+    lane instead of a bar that pretends to cover them."""
+    def secs(tc):
+        try:
+            h, m, s, f = (int(x) for x in tc.replace(";", ":").split(":"))
+        except (ValueError, AttributeError):
+            return None
+        return ((h * 60 + m) * 60 + s) + f / (fps or 25.0)
+
+    segs = []
+    start_tc = last_tc = None
+    last_s = None
+    for g in gops:
+        tc = g.get("tc")
+        t = secs(tc) if tc else None
+        if t is None:
+            continue
+        if last_s is not None and (t - last_s > 1.0 or t - last_s < -0.2):
+            segs.append({"tc0": start_tc, "tc1": last_tc})
+            start_tc = tc
+        if start_tc is None:
+            start_tc = tc
+        last_tc = tc
+        last_s = t
+    if start_tc is not None:
+        segs.append({"tc0": start_tc, "tc1": last_tc})
+    return segs
+
+
 def _source(idx, shift):
     """Per-capture summary: its place on the tape axis (``shift``), damage-flag totals, the
     recording-time / tape-TC span it covers (read from the GOP index, never extrapolated), and
@@ -66,6 +98,7 @@ def _source(idx, shift):
         "tc0": tcs[0] if tcs else None,
         "tc1": tcs[-1] if tcs else None,
         "damage": _source_damage(gops),
+        "coverage": _source_coverage(gops, idx.fps),
     }
 
 
