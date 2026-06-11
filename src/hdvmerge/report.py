@@ -143,6 +143,23 @@ def render(plan):
                      for g in groups])
     L.append("")
 
+    # recorded-but-unreadable-in-every-capture: the tape was recorded here (rec-run TC and wall
+    # clock advance in step across it) but no pass could read it — the merge jumps across it
+    if plan.lost:
+        total_f = sum(l["frames"] for l in plan.lost)
+        L.append("## ⚠ Lost tape — recorded but unreadable in every capture")
+        L.append("")
+        L.append("%d span%s, ~%s. The tape WAS recorded here (its rec-run timecode and the camera "
+                 "wall clock advance together across the spot) but no capture could read it, so the "
+                 "merge jumps across it. Re-capture — a different deck, a cleaning, or a slower pass "
+                 "may recover it."
+                 % (len(plan.lost), "" if len(plan.lost) == 1 else "s", _hms(total_f, fps)))
+        L.append("")
+        L += _table(["recording time", "tape TC", "length"],
+                    [[_time(l["rec0"]), "%s → %s" % (_tc(l["tc0"]), _tc(l["tc1"])),
+                      _hms(l["frames"], fps)] for l in plan.lost])
+        L.append("")
+
     # genuine gaps (missing in every capture) — worse than a residual
     if plan.gaps:
         L.append("## Gaps — missing in every capture")

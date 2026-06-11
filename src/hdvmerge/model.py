@@ -118,3 +118,5 @@ class Plan:
     emitted_tei: int = 0  # expected totals (re-phasing must add none at seams)
     unused_sources: list = field(default_factory=list)  # sources that couldn't be placed (flagged)
     video_pid: Optional[int] = None   # for build's gap discontinuity markers
+    lost: list = field(default_factory=list)  # recorded-but-unreadable-in-every-capture spans
+    #                                           (rec-run TC + wall clock jump together); see plan.py

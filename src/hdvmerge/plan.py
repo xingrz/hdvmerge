@@ -14,11 +14,62 @@ is hand-editable). plan.json is the source of truth for ``build``.
 """
 
 from collections import Counter
+from datetime import datetime
 
 from .model import Plan, Segment
 
 EDGE = 12              # GOPs near a capture's head/tail to avoid (capture can corrupt edges)
 CLEAN_RUN_CAP = 120
+
+
+def _tc_seconds(tc, fps):
+    if not tc:
+        return None
+    try:
+        h, m, s, f = (int(x) for x in tc.replace(";", ":").split(":"))
+    except (ValueError, AttributeError):
+        return None
+    return ((h * 60 + m) * 60 + s) + f / (fps or 25.0)
+
+
+def _rec_dt(rec):
+    if not rec:
+        return None
+    try:
+        return datetime.strptime(rec, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _lost_spans(emitted, fps):
+    """Stretches the merged output skips where the recording was actually CONTINUOUS — tape that was
+    recorded but is unreadable in **every** capture. Every pass then jumps across the same spot, and
+    the hash walk, seeing no GOPs there, wrongly treats the two sides as tape-adjacent (no axis gap),
+    so this loss would otherwise go unreported.
+
+    The discriminator is the **rec-run tape TC** vs the camera **wall clock**: across a real lost
+    stretch both advance by the same amount (the tape recorded that long); across a *camera stop* the
+    wall clock jumps far more than the rec-run TC (which pauses while not recording). So we flag a
+    forward TC jump only when the wall clock confirms it. (This is the HDV analogue of dvmerge's
+    abst-gap detection.) ``emitted`` is the output GOPs in order, each ``{tc, rec, frame, tag,
+    gap_before}``."""
+    out = []
+    for a, b in zip(emitted, emitted[1:]):
+        if b.get("gap_before"):
+            continue   # already a signalled island gap (find-back), not an in-walk loss
+        ta, tb = _tc_seconds(a["tc"], fps), _tc_seconds(b["tc"], fps)
+        ra, rb = _rec_dt(a["rec"]), _rec_dt(b["rec"])
+        if ta is None or tb is None or ra is None or rb is None:
+            continue
+        tc_d = tb - ta
+        wall_d = (rb - ra).total_seconds()
+        # > 1.5 s is well past a single GOP gap (~0.5 s), so this is several GOPs the output skipped
+        if tc_d > 1.5 and wall_d > 0 and abs(tc_d - wall_d) <= max(1.0, 0.34 * tc_d):
+            out.append({"frame": b["frame"], "tag": a["tag"],
+                        "tc0": a["tc"], "tc1": b["tc"],
+                        "rec0": a["rec"], "rec1": b["rec"],
+                        "frames": max(1, int(round(tc_d * fps)) - 1)})
+    return out
 
 
 def _prep(report):
@@ -151,6 +202,7 @@ def build_plan(report):
     # TS-level breaks the build copies out — the output self-check expects exactly these and no more
     # (re-phasing must introduce no new break at any seam).
     residuals = []
+    emitted = []
     emitted_cc = emitted_tei = 0
     frame = 0
     for sg in segs:
@@ -160,6 +212,8 @@ def build_plan(report):
         for j in range(sg.j0, sg.j1 + 1):
             emitted_cc += g[j]["cc"]
             emitted_tei += g[j]["tei"]
+            emitted.append({"tc": g[j].get("tc"), "rec": g[j].get("rec"), "frame": frame,
+                            "tag": sg.tag, "gap_before": (j == sg.j0 and sg.gap_before)})
             if fo["bad"][j]:
                 residuals.append({"frame": frame, "rec": g[j].get("rec"), "tc": g[j].get("tc"),
                                   "tag": sg.tag, "gop": j, "cc": g[j]["cc"], "tei": g[j]["tei"],
@@ -169,7 +223,7 @@ def build_plan(report):
     return Plan(segments=segs, residuals=residuals, divergences=divergences,
                 gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
                 emitted_cc=emitted_cc, emitted_tei=emitted_tei, unused_sources=unused,
-                video_pid=report.source(chain[0]).video_pid)
+                video_pid=report.source(chain[0]).video_pid, lost=_lost_spans(emitted, fps))
 
 
 def _stitch_islands(segs, chain, F):

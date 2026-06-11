@@ -109,6 +109,28 @@ class TestJsonOut(unittest.TestCase):
         gops = [{"tc": "07:00:00:00"}, {"tc": "07:00:00:12"}, {"tc": "07:00:01:00"}]
         self.assertEqual(len(jsonout._source_coverage(gops, 25.0)), 1)
 
+    def test_lost_spans_flags_recorded_but_unreadable_tape(self):
+        # the output jumps ~3 s in BOTH the rec-run tape TC and the wall clock = tape that was
+        # recorded but unreadable in every pass
+        emitted = [{"tc": "07:00:10:00", "rec": "2009-01-01 08:00:10", "frame": 100, "tag": "A"},
+                   {"tc": "07:00:13:00", "rec": "2009-01-01 08:00:13", "frame": 112, "tag": "A"}]
+        lost = planmod._lost_spans(emitted, 25.0)
+        self.assertEqual(len(lost), 1)
+        self.assertEqual((lost[0]["tc0"], lost[0]["tc1"]), ("07:00:10:00", "07:00:13:00"))
+        self.assertGreater(lost[0]["frames"], 0)
+
+    def test_lost_spans_ignores_a_camera_stop(self):
+        # wall clock jumps 60 s but the rec-run tape TC barely moves = camera was off, not lost tape
+        emitted = [{"tc": "07:00:10:00", "rec": "2009-01-01 08:00:10", "frame": 100, "tag": "A"},
+                   {"tc": "07:00:10:12", "rec": "2009-01-01 08:01:10", "frame": 112, "tag": "A"}]
+        self.assertEqual(planmod._lost_spans(emitted, 25.0), [])
+
+    def test_lost_spans_skips_a_signalled_island_gap(self):
+        emitted = [{"tc": "07:00:10:00", "rec": "2009-01-01 08:00:10", "frame": 100, "tag": "A"},
+                   {"tc": "07:00:13:00", "rec": "2009-01-01 08:00:13", "frame": 112, "tag": "B",
+                    "gap_before": True}]
+        self.assertEqual(planmod._lost_spans(emitted, 25.0), [])
+
     def test_cli_json_emits_exactly_one_object_on_stdout(self):
         files = self._captures()
         out, err = io.StringIO(), io.StringIO()
