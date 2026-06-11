@@ -73,6 +73,7 @@ PATH; pass `--no-decode` to skip it.
 | `INPUT…` | Capture files or a directory of them. Each is indexed (cached as `<capture>.idx.jsonl`, rebuilt only on change); all are then aligned and the re-capture list is printed. |
 | `-o FILE` | Also build the merged file at `FILE` (byte concatenation + CC re-phasing, then a self-check), and write `FILE.report.md` beside it. |
 | `--no-decode` | Skip the ffmpeg intra-frame decode detection pass (otherwise on whenever ffmpeg is available; detection only, never affects the merged bytes). |
+| `--json` | Emit the analysis as one JSON object on stdout (a faithful dump of the model — sources, segments, residuals, divergences, gaps) instead of the Markdown report, for a tool to consume; all human status goes to stderr. |
 | `--index-dir DIR` | Store and read index caches in `DIR` (keyed by file name) instead of beside each capture. |
 | `--no-index` | Don't read or write any index cache; build the index in memory each run. |
 

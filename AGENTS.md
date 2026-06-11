@@ -67,6 +67,8 @@ src/hdvmerge/
   plan.py       greedy indel-proof walk -> Plan (segments + residuals + divergences)
   build.py      byte-concat + CC re-phasing (the only writer of output bytes)
   report.py     Plan -> human Markdown report;  verify.py  AUX survival;  cli.py  the command
+  jsonout.py    Report+Plan -> JSON-ready dict (the `--json` contract a GUI/tool consumes instead of
+                scraping Markdown); a faithful dump of the model, NOT a normalised external schema
 tests/  fixtures.py + test_*.py   (synthetic TS, no sample data needed)
 docs/   hdv-internals.md  algorithm.md  formats.md
 ```
@@ -143,6 +145,10 @@ are imported everywhere — do not fork copies into the stage modules.
 
 - ffmpeg may detect (the decode pass) but must never build output; third-party deps are fine but
   the core needs none.
+- `jsonout.analysis` (`--json`) is a **consumed contract** — a GUI reads it instead of scraping the
+  Markdown. Normal CLI use never exercises it, so `tests/test_jsonout.py` pins its shape to the
+  model; keep them in lock-step when you touch `model.py` / `plan.py` / `scan.py`. It is a faithful
+  dump of hdvmerge's own model — don't bend it toward a consumer's schema (the consumer normalises).
 - The only persisted artifact is the per-capture index. Keep it **idempotent**: no mtime, no
   timestamps, no absolute paths in it; `tag` is the basename; serialize with sorted keys. Change
   detection is the content `fingerprint` (size + head/tail hash), never mtime.
