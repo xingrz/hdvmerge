@@ -199,6 +199,23 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(plan.total_frames, 40 * 4)            # the tape once, not twice
         self.assertEqual(len([s for s in plan.segments if s.gap_before]), 0)
 
+    def test_islands_assemble_by_rec_not_tc(self):
+        # a re-capture fragment whose recording reset the tape TC (low TC) but sits mid-reel by wall
+        # clock must slot into its place by rec — not append at the end by its low TC, which would
+        # send the player's clock backwards and truncate the reported duration.
+        from hdvmerge.model import Segment
+
+        def seg(tag, rec, tc):
+            return Segment(tag=tag, src="x", off=0, end=1, j0=0, j1=0, ngops=1, nbytes=1,
+                           rec=rec, tc=tc)
+        main = [seg("m", "2011-06-10 09:00:00", "07:30:00:00"),
+                seg("m", "2011-06-10 09:10:00", "07:40:00:00")]
+        frag = [seg("f", "2011-06-10 09:05:00", "07:05:00:00")]
+        segs, unused = planmod._assemble_runs([main, frag])
+        self.assertEqual([s.tag for s in segs], ["m", "f", "m"])      # frag slotted in by rec
+        self.assertTrue(segs[1].gap_before and segs[2].gap_before)    # island boundaries marked
+        self.assertEqual(unused, [])
+
     def _build(self, plan):
         out = os.path.join(self.tmp, "out.m2t")
         buildmod.build(plan, out)

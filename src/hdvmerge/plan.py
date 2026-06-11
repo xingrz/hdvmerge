@@ -260,19 +260,31 @@ def build_plan(report):
 
 
 def _assemble_runs(run_segs):
-    """Order the per-island walk runs along the tape by TC and concatenate them; every island after
-    the first carries ``gap_before`` — a real discontinuity the build marks and never re-phases
-    across. Every capture has been walked into some run, so nothing is stranded; ``unused`` stays
-    empty (kept in the return for the contract)."""
-    keyed = []
-    for rs in run_segs:
-        if rs:
-            tcs = [s.tc for s in rs if s.tc]
-            keyed.append((min(tcs) if tcs else None, rs))
-    # islands with a tape TC sort by it; a TC-less island (pathological) trails in input order
-    keyed.sort(key=lambda k: (k[0] is None, k[0] or ""))
+    """Interleave the per-island walk runs into one tape-ordered sequence by **wall-clock rec** — a
+    monotone tape coordinate. (Tape TC resets per recording, so it can't order islands: a re-capture
+    fragment that fills a gap mid-reel would sort by its low TC and append at the END, sending the
+    clock backwards and breaking a player's duration/seek.) `rec` is the camera clock the tape
+    carries verbatim and advances along the whole tape. A k-way merge keeps every run internally
+    ordered (the walk order is authoritative) and drops each island into its tape position by rec. A
+    run change (an island boundary) carries ``gap_before`` — a real discontinuity the build marks and
+    never re-phases across. Nothing is stranded, so ``unused`` stays empty."""
+    runs = [r for r in run_segs if r]
+
+    def head_key(ri):
+        s = runs[ri][pos[ri]]
+        return (s.rec is None, s.rec or "", s.tc or "")
+
+    pos = [0] * len(runs)
     segs = []
-    for i, (_, rs) in enumerate(keyed):
-        rs[0].gap_before = bool(i)
-        segs.extend(rs)
+    prev = None
+    while True:
+        avail = [ri for ri in range(len(runs)) if pos[ri] < len(runs[ri])]
+        if not avail:
+            break
+        ri = min(avail, key=head_key)
+        s = runs[ri][pos[ri]]
+        pos[ri] += 1
+        s.gap_before = prev is not None and ri != prev
+        segs.append(s)
+        prev = ri
     return segs, []
