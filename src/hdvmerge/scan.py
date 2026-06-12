@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from . import TS
 from .psi import find_pids
 from .gop import GopSplitter, parse_pts
-from .aux import parse_aux
+from .auxpack import parse_aux
 from .model import FileIndex, Report, INDEX_VERSION, index_path, save_index, load_index
 
 

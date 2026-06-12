@@ -14,7 +14,7 @@ from . import TS
 from . import ts as T
 from . import probe
 from .psi import find_pids
-from .aux import parse_aux
+from .auxpack import parse_aux
 
 _DEC_WINDOW = 5   # GOPs: a decode error attributes a few GOPs off its true frame (B-frame reorder)
 

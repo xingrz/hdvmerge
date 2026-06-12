@@ -1,6 +1,6 @@
 import unittest
 
-from hdvmerge import ts, gop, aux
+from hdvmerge import ts, gop, auxpack
 from . import fixtures as fx
 
 
@@ -35,21 +35,21 @@ class TestTs(unittest.TestCase):
 class TestAux(unittest.TestCase):
     def test_rec_roundtrip(self):
         payload = fx.aux_payload(2007, 1, 1, 9, 36, 5)
-        self.assertEqual(aux.parse_rec(payload), "2007-01-01 09:36:05")
+        self.assertEqual(auxpack.parse_rec(payload), "2007-01-01 09:36:05")
 
     def test_rec_rejects_garbage(self):
-        self.assertIsNone(aux.parse_rec(b"\x00\x00\x01\xbf\x00\x10" + b"\x55" * 40))
-        self.assertEqual(aux.parse_aux(b"\x00\x00\x01\xbf\x00\x10" + b"\x55" * 40), (None, None))
+        self.assertIsNone(auxpack.parse_rec(b"\x00\x00\x01\xbf\x00\x10" + b"\x55" * 40))
+        self.assertEqual(auxpack.parse_aux(b"\x00\x00\x01\xbf\x00\x10" + b"\x55" * 40), (None, None))
 
     def test_tape_tc_roundtrip(self):
         # tape TC distinct from the wall clock (hour 07 vs 09) — both from one shared anchor
         payload = fx.aux_payload(2007, 1, 1, 9, 36, 5, tc=(7, 36, 5, 12))
-        self.assertEqual(aux.parse_aux(payload), ("2007-01-01 09:36:05", "07:36:05:12"))
-        self.assertEqual(aux.parse_tc(payload), "07:36:05:12")
+        self.assertEqual(auxpack.parse_aux(payload), ("2007-01-01 09:36:05", "07:36:05:12"))
+        self.assertEqual(auxpack.parse_tc(payload), "07:36:05:12")
 
     def test_tc_frame_field_decodes(self):
         # frame field is the last byte of HH FF SS MM and must survive at the 25/30 boundary
-        self.assertEqual(aux.parse_tc(fx.aux_payload(2007, 1, 1, 9, 0, 0, tc=(1, 2, 3, 24))),
+        self.assertEqual(auxpack.parse_tc(fx.aux_payload(2007, 1, 1, 9, 0, 0, tc=(1, 2, 3, 24))),
                          "01:02:03:24")
 
 
