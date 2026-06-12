@@ -102,6 +102,31 @@ def _source(idx, shift):
     }
 
 
+def _rec_curve(report, plan, target=600):
+    """A sampled ``(tc, rec)`` curve of the assembled tape: the tape timecode paired with the camera
+    wall-clock at that position, walked in output order. Lets a consumer map any tape position to its
+    true recording time *per position* — the wall clock is non-linear (it jumps at record pauses, and
+    where footage was shot on a different day) so extrapolating from one anchor is wrong. Uniformly
+    downsampled to ~``target`` points to bound size; discontinuities survive at the sample resolution
+    and the consumer snaps across them."""
+    pts = []
+    for s in plan.segments:
+        idx = report.source(s.tag)
+        if idx is None:
+            continue
+        for g in idx.gops[s.j0:s.j1]:
+            tc, rec = g.get("tc"), g.get("rec")
+            if tc and rec:
+                pts.append((tc, rec))
+    if not pts:
+        return []
+    step = max(1, len(pts) // target)
+    out = [{"tc": pts[i][0], "rec": pts[i][1]} for i in range(0, len(pts), step)]
+    if (len(pts) - 1) % step:
+        out.append({"tc": pts[-1][0], "rec": pts[-1][1]})
+    return out
+
+
 def _segment(sg):
     return {
         "tag": sg.tag,
@@ -138,6 +163,7 @@ def analysis(report, plan):
         "chain": list(report.chain),
         "sources": [_source(report.source(t), report.shifts.get(t, 0)) for t in report.chain],
         "segments": [_segment(s) for s in plan.segments],
+        "rec_curve": _rec_curve(report, plan),
         "residuals": plan.residuals,
         "divergences": plan.divergences,
         "gaps": plan.gaps,

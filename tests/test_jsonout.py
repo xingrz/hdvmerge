@@ -70,6 +70,11 @@ class TestJsonOut(unittest.TestCase):
         self.assertFalse(seg["gap_before"])
         self.assertTrue(seg["tc"])
 
+        # the (tc, rec) curve of the assembled tape: every point carries both, tape-ordered
+        curve = d["rec_curve"]
+        self.assertTrue(curve and all(p["tc"] and p["rec"] for p in curve))
+        self.assertEqual(curve[0]["tc"], "00:00:00:00")      # starts at the tape head
+
     def test_single_copy_damage_surfaces_as_residual(self):
         d = self._analysis(dmgA={5: "cc"})               # tape 5 lives only in capA -> no clean copy
         self.assertFalse(d["complete"])
