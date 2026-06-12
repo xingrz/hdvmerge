@@ -61,7 +61,7 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(b["shift"] - a["shift"], 10)        # B starts 10 GOPs into the tape
         self.assertEqual(a["ngops"], 40)
         self.assertEqual(a["cc"], 0)
-        self.assertEqual(a["tc0"], "07:00:00:00")            # span read from the index, not faked
+        self.assertEqual(a["tc0"], "00:00:00:00")            # span read from the index, not faked
 
         self.assertGreaterEqual(len(d["segments"]), 2)       # at least one seam
         seg = d["segments"][0]

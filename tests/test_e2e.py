@@ -45,7 +45,7 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(len(idx.gops), 40)
         self.assertEqual(idx.fingerprint, scanmod.fingerprint(files[0]))
         self.assertEqual(idx.version, model.INDEX_VERSION)
-        self.assertEqual(idx.gops[0]["tc"], "07:00:00:00")   # tape TC attached per GOP
+        self.assertEqual(idx.gops[0]["tc"], "00:00:00:00")   # tape TC (MM:SS:FF, no hours) per GOP
 
     def test_unchanged_source_is_not_reindexed(self):
         files = self._captures()
@@ -92,7 +92,7 @@ class TestEndToEnd(unittest.TestCase):
         ok, info = verifymod.verify(out)
         self.assertTrue(ok)
         self.assertTrue(info["rec_head"].startswith("2007-01-01 09:00:0"))
-        self.assertTrue(info["tc_head"].startswith("07:00:0"))       # tape TC survived the build
+        self.assertTrue(info["tc_head"].startswith("00:00:0"))       # tape TC survived the build
 
     def test_routes_around_overlap_damage(self):
         rep = scanmod.analyze(self._captures(dmgA={24: "cc"}))

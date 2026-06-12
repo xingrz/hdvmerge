@@ -17,7 +17,8 @@ from typing import Optional
 import json
 import os
 
-INDEX_VERSION = 4   # v2: tape timecode (`tc`); v4: dropped the seam flag. Older caches rebuild.
+INDEX_VERSION = 5   # v2: tape timecode (`tc`); v4: dropped the seam flag; v5: tape TC no longer
+#                     mis-reads the 0x07 status byte as hours (was a spurious 07:). Older caches rebuild.
 
 # A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec tc
 
