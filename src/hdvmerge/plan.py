@@ -217,17 +217,30 @@ def build_plan(report):
     # byte-identical re-capture (>=90% covered) is skipped so it isn't emitted as a twin island, and a
     # walk stops where it re-enters covered tape, so nothing is emitted twice. Order is by `chain`
     # (shift order) only for determinism; coverage no longer depends on which capture seeds first.
+    #
+    # Re-seed until coverage stops growing, NOT just once per capture: a single walk can stop partway
+    # through a capture — it rides a short clean copy to that copy's end and then can't hop back onto
+    # the only remaining capture because damage there changed its GOP hash (the hash-locate fails). The
+    # rest of that capture's footage would otherwise be orphaned: not emitted (a silent hole in the
+    # result) and not flagged for re-capture (no emitted GOP there means no residual). Each pass walks
+    # from each capture's first STILL-uncovered clean GOP; a walk always emits at least that seed GOP,
+    # so `covered` grows every pass until nothing is left uncovered, then we stop.
     runs = []
-    for seed in chain:
-        clean_js = [j for j in range(F[seed]["n"]) if not F[seed]["bad"][j]]
-        uncov = [j for j in clean_js if F[seed]["H"][j] not in covered]
-        if clean_js and len(uncov) < 0.1 * len(clean_js):
-            continue
-        path = walk(seed, uncov[0] if uncov else 0)
-        for (t, j) in path:
-            if not F[t]["bad"][j]:
-                covered.add(F[t]["H"][j])
-        runs.append(path)
+    while True:
+        seeded = False
+        for seed in chain:
+            clean_js = [j for j in range(F[seed]["n"]) if not F[seed]["bad"][j]]
+            uncov = [j for j in clean_js if F[seed]["H"][j] not in covered]
+            if not clean_js or len(uncov) < 0.1 * len(clean_js):
+                continue
+            path = walk(seed, uncov[0])
+            for (t, j) in path:
+                if not F[t]["bad"][j]:
+                    covered.add(F[t]["H"][j])
+            runs.append(path)
+            seeded = True
+        if not seeded:
+            break
 
     def coalesce(path):
         rs = []
