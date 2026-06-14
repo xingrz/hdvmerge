@@ -17,8 +17,10 @@ from typing import Optional
 import json
 import os
 
-INDEX_VERSION = 5   # v2: tape timecode (`tc`); v4: dropped the seam flag; v5: tape TC no longer
-#                     mis-reads the 0x07 status byte as hours (was a spurious 07:). Older caches rebuild.
+INDEX_VERSION = 6   # v2: tape timecode (`tc`); v4: dropped the seam flag; v5: tape TC no longer
+#                     mis-reads the 0x07 status byte as hours (was a spurious 07:); v6: HDV tape-TC
+#                     hours come from the rec-date pack ID (0xC0..0xC3), so cached rec-date + TC now
+#                     survive past 60:00 on long takes. A mismatch rebuilds older caches.
 
 # A per-GOP record is a plain dict: i off end nbytes npic closed broken pts h cc tei dec rec tc
 
