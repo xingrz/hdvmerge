@@ -42,11 +42,20 @@ class TestAux(unittest.TestCase):
         self.assertEqual(auxpack.parse_aux(b"\x00\x00\x01\xbf\x00\x10" + b"\x55" * 40), (None, None))
 
     def test_tape_tc_roundtrip(self):
-        # tape TC (MM:SS:FF) distinct from the wall clock — both from one shared anchor. The pack
-        # carries no hours, so the tape TC always reads hour 00 (the 0x07 status byte is NOT hours).
+        # tape TC (MM:SS:FF) distinct from the wall clock — both from one shared anchor. Under the
+        # hour the rec-date pack ID is 0xC0, so the tape TC reads hour 00 (the 0x07 status byte is
+        # NOT hours).
         payload = fx.aux_payload(2007, 1, 1, 9, 36, 5, tc=(36, 5, 12))
         self.assertEqual(auxpack.parse_aux(payload), ("2007-01-01 09:36:05", "00:36:05:12"))
         self.assertEqual(auxpack.parse_tc(payload), "00:36:05:12")
+
+    def test_tape_tc_past_one_hour(self):
+        # a continuous take crossing 60:00: the 0x63 pack's MM:SS:FF has no hours, so the hour rides
+        # in the rec-date pack ID (0xC1 = hour 1). Both the tape TC AND the wall-clock/date must
+        # still decode — the old 0xC0-only anchor blanked the whole pack past the hour.
+        payload = fx.aux_payload(2009, 5, 12, 14, 30, 0, tc=(1, 0, 21, 12))
+        self.assertEqual(auxpack.parse_aux(payload), ("2009-05-12 14:30:00", "01:00:21:12"))
+        self.assertEqual(auxpack.parse_tc(payload), "01:00:21:12")
 
     def test_tc_frame_field_decodes(self):
         # frame field is the last data byte (07 FF SS MM) and must survive at the 25/30 boundary

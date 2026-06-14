@@ -63,15 +63,18 @@ def gop_es(tape_idx, frames=4, closed=1, broken=0, corrupt=False):
 
 
 def aux_payload(y, mo, d, h, mi, s, tc=None):
-    """One Sony-AUX PES. ``tc`` is an optional ``(MM, SS, FF)`` tape timecode written into the 0x63
-    pack as it really appears: a constant ``0x07`` status byte, then ``FF SS MM`` (no hours field);
-    omitted -> a zeroed 0x63 pack."""
+    """One Sony-AUX PES. ``tc`` is an optional tape timecode written into the 0x63 pack as it really
+    appears: a constant ``0x07`` status byte, then ``FF SS MM`` (no hours field). Pass ``(MM, SS, FF)``
+    for an hour-0 code, or ``(HH, MM, SS, FF)`` — the hour is carried in the rec-date pack ID
+    (``0xC0 | HH``), exactly as a real deck encodes it. Omitted -> a zeroed 0x63 pack."""
     if tc is None:
-        tmm = tss = tff = 0
+        thh = tmm = tss = tff = 0
+    elif len(tc) == 4:
+        thh, tmm, tss, tff = tc
     else:
-        tmm, tss, tff = tc
+        thh, (tmm, tss, tff) = 0, tc
     anchor = bytes([0x63, 0x07, _bcd(tff), _bcd(tss), _bcd(tmm),
-                    0xC0, 0x00, _bcd(d), _bcd(mo), _bcd(y % 100),
+                    0xC0 | (thh & 0x03), 0x00, _bcd(d), _bcd(mo), _bcd(y % 100),
                     0xFF, _bcd(s), _bcd(mi), _bcd(h), 0x00])
     return b"\x00\x00\x01\xbf" + struct.pack(">H", len(anchor)) + anchor
 

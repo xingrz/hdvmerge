@@ -4,27 +4,29 @@ Sony HDV cameras write the real camera clock into a private TS stream (``stream_
 Inside each ``private_stream_2`` (PES id 0xBF) packet the metadata sits at fixed offsets from
 a ``0x63`` pack anchor::
 
-    63 07 FF SS MM   c0 .. DD MM YY   ff   ss mm hh ..
-    └ tape TC pack                         └ wall-clock ss mm hh (BCD, reversed vs DV)
-       (status 0x07, then FF SS MM)  └ 0xC0 rec_date pack (.. day month year, BCD)
+    63 07 FF SS MM   c0..c3 .. DD MM YY   ff   ss mm hh ..
+    └ tape TC pack                             └ wall-clock ss mm hh (BCD, reversed vs DV)
+       (status 0x07, then FF SS MM)  └ rec_date pack (id 0xC0..0xC3: low 2 bits = TC hour,
+                                        then .. day month year, BCD)
 
 Two distinct clocks live in this one anchor:
 
-- The **wall-clock** date/time (``0xC0`` date pack + the ``ss mm hh`` after the ``0xFF``) is the
-  camera's real-time clock — second resolution. It is NOT linear with tape position (the original
-  recording was paused/resumed), so read it per position, never extrapolate.
+- The **wall-clock** date/time (the date pack + the ``ss mm hh`` after the ``0xFF``) is the camera's
+  real-time clock — second resolution. It is NOT linear with tape position (the original recording
+  was paused/resumed), so read it per position, never extrapolate.
 - The **tape timecode** in the ``0x63`` pack is the camcorder's running TC track. Its data bytes are
-  ``07 FF SS MM``: a constant Sony status byte (``0x07``), then frames / seconds / minutes —
-  frame-accurate, but with **no hours field** (a consumer rec-run TC never reaches an hour; the byte
-  where DV carries hours is the ``0xC0`` pack boundary, i.e. 0). So the tape TC is ``00:MM:SS:FF``.
-  Verified against real captures: ``FF SS MM`` advance at real speed and the ``wall-clock − TC``
-  offset stays constant across a continuous capture, while ``0x07`` is constant tape-wide and the
-  on-camera TC shows no hours. It is *rec-run*: it resets at each record start, so across a whole
-  tape it is piecewise-monotonic with a jump at every take boundary — like the wall-clock, never
-  extrapolate it across positions. Within a take it is finer-grained than the second-resolution
-  wall-clock, which is exactly what a re-capture references.
+  ``07 FF SS MM``: a constant Sony status byte (``0x07``), then frames / seconds / minutes — the
+  ``0x63`` pack has **no hours field of its own**. The hours digit instead rides in the low bits of
+  the adjacent rec-date pack ID: ``0xC0`` = hour 0, ``0xC1`` = hour 1, … so the TC is ``HH:MM:SS:FF``.
+  Verified byte-for-byte on a continuous >60 min capture: at 60:00 the ``0x63`` pack's ``MM:SS:FF``
+  wraps 59:59 -> 00:00 while the pack ID flips ``0xC0`` -> ``0xC1`` and the wall-clock runs on
+  unbroken — one take crossing an hour, not a new recording. (Reading the ``0x07`` status byte as
+  hours, or accepting only ``0xC0``, each used to blank everything past 60:00.) It is *rec-run*: it
+  resets at each record start, so across a whole tape it is piecewise-monotonic with a jump at every
+  take boundary — like the wall-clock, never extrapolate it across positions. Within a take it is
+  finer-grained than the second-resolution wall-clock, which is exactly what a re-capture references.
 
-The PES context (00 00 01 BF) plus the ``63 .. c0 .. ff`` shape is specific enough that random
+The PES context (00 00 01 BF) plus the ``63 .. c0..c3 .. ff`` shape is specific enough that random
 bytes don't false-match.
 """
 
@@ -46,8 +48,8 @@ def parse_aux(pes_payload):
         return None, None
     b = p[6:]  # skip 6-byte private_stream_2 PES header
     for i in range(0, len(b) - 14):
-        if b[i] != 0x63 or b[i + 5] != 0xC0 or b[i + 10] != 0xFF:
-            continue
+        if b[i] != 0x63 or (b[i + 5] & 0xFC) != 0xC0 or b[i + 10] != 0xFF:
+            continue  # rec-date pack id 0xC0..0xC3 (low 2 bits = the tape-TC hour)
         day = _bcd(b[i + 7] & 0x3F)
         month = _bcd(b[i + 8] & 0x1F)
         yb = _bcd(b[i + 9])
@@ -60,12 +62,12 @@ def parse_aux(pes_payload):
         else:
             rec = "%04d-%02d-%02d" % (year, month, day)
         # tape timecode in the 0x63 pack's data bytes: `07 FF SS MM` — a constant Sony status byte
-        # (0x07), then frames / seconds / minutes (flag bits masked off). There is NO hours field:
-        # this rec-run TC resets per take and never reaches an hour, and the byte where DV would put
-        # hours is the 0xC0 pack boundary (= 0). The status byte used to be mis-decoded as HH, which
-        # stamped a spurious "07:" on every tape timecode (confirmed against real captures: 0x07 is
-        # constant tape-wide and the on-camera TC has no hours).
-        thh = 0
+        # (0x07), then frames / seconds / minutes (flag bits masked off). The 0x63 pack has NO hours
+        # field; the hours digit rides in the low bits of the rec-date pack ID (0xC0=0h, 0xC1=1h, …),
+        # so the TC rolls 59:59 -> 1:00:00 past the hour instead of resetting. (The 0x07 byte is a
+        # constant status byte, not HH — reading it as hours once stamped a spurious "07:" on every
+        # code; accepting only 0xC0 once blanked rec-date + TC for every frame past 60:00 mid-take.)
+        thh = b[i + 5] & 0x03
         tff = _bcd(b[i + 2] & 0x3F)
         tss = _bcd(b[i + 3] & 0x7F)
         tmm = _bcd(b[i + 4] & 0x7F)
