@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -107,8 +108,8 @@ class TestJsonOut(unittest.TestCase):
                 {"tc": "07:00:07:00"}, {"tc": "07:00:07:12"}]   # 01:00 -> 07:00 is a 6 s jump
         segs = jsonout._source_coverage(gops, 25.0)
         self.assertEqual(len(segs), 2)
-        self.assertEqual(segs[0], {"tc0": "07:00:00:00", "tc1": "07:00:01:00"})
-        self.assertEqual(segs[1], {"tc0": "07:00:07:00", "tc1": "07:00:07:12"})
+        self.assertEqual(segs[0], {"tc0": "07:00:00:00", "tc1": "07:00:01:00", "j0": 0, "j1": 3})
+        self.assertEqual(segs[1], {"tc0": "07:00:07:00", "tc1": "07:00:07:12", "j0": 3, "j1": 5})
 
     def test_source_coverage_is_one_segment_when_contiguous(self):
         gops = [{"tc": "07:00:00:00"}, {"tc": "07:00:00:12"}, {"tc": "07:00:01:00"}]
@@ -159,6 +160,36 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(d["schema"], "hdvmerge.analysis/1")
         self.assertEqual(d["chain"], ["capA", "capB"])
         self.assertIn("capA", err.getvalue())            # per-file status went to stderr, not stdout
+
+
+class TestAxisAnchors(unittest.TestCase):
+    """The physical-frame axis: detecting a recording-session seam (TC restart) and the frame->tc/rec
+    anchor curve, so a multi-session HDV tape lays out by frame instead of collapsing on TC."""
+
+    @staticmethod
+    def _ctx(tcs):
+        gops = [{"tc": t, "rec": "2009-10-23 15:00:00", "npic": 12} for t in tcs]
+        src = types.SimpleNamespace(gops=gops)
+        seg = types.SimpleNamespace(tag="capA", j0=0, j1=len(gops), frame0=0)
+        plan = types.SimpleNamespace(fps=25.0, segments=[seg])
+        report = types.SimpleNamespace(source=lambda t: src)
+        return report, plan
+
+    def test_detects_tc_reset_as_a_seam(self):
+        # record-run TC climbs 0..49 s then resets to 0 (footage spliced on); the reset GOP is the
+        # 51st, at frame 50*12 = 600
+        report, plan = self._ctx(["00:00:%02d:00" % s for s in range(50)] + ["00:00:00:00", "00:00:01:00"])
+        anchors, seams, multi = jsonout._axis_anchors(report, plan)
+        self.assertTrue(multi)
+        self.assertEqual(seams, [600])
+        self.assertEqual(anchors[0], {"frame": 0, "tc": "00:00:00:00", "rec": "2009-10-23 15:00:00"})
+        self.assertIn(600, [a["frame"] for a in anchors])   # the seam is always anchored
+
+    def test_monotonic_tape_has_no_seam(self):
+        report, plan = self._ctx(["00:00:%02d:00" % s for s in range(30)])
+        _anchors, seams, multi = jsonout._axis_anchors(report, plan)
+        self.assertEqual(seams, [])
+        self.assertFalse(multi)
 
 
 if __name__ == "__main__":
