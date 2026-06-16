@@ -92,19 +92,41 @@ def _lost_spans(emitted, fps):
     wall clock jumps far more than the rec-run TC (which pauses while not recording). So we flag a
     forward TC jump only when the wall clock confirms it. (This is the HDV analogue of dvmerge's
     abst-gap detection.) ``emitted`` is the output GOPs in order, each ``{tc, rec, frame, tag,
-    gap_before}``."""
+    gap_before}``.
+
+    This is evaluated at EVERY step, including an island boundary (``gap_before``). Where footage is
+    missing in every capture the walk cannot bridge the two sides, so they end up as separate islands
+    stitched only by TC — there is no GOP between them and no axis gap, so unless it is caught here the
+    loss is invisible to the JSON consumer (it shows only as a ⟂ row in the Markdown). The same
+    discriminator keeps this honest: a genuinely tape-adjacent island join steps by ~one GOP and never
+    trips the > 1.5 s test, and a camera-pause / session-reset boundary fails the wall-clock check."""
     out = []
+    hwm = None   # highest tape TC reached in the output so far (seconds) — the assembly frontier
     for a, b in zip(emitted, emitted[1:]):
-        if b.get("gap_before"):
-            continue   # already a signalled island gap (find-back), not an in-walk loss
         ta, tb = _tc_seconds(a["tc"], fps), _tc_seconds(b["tc"], fps)
+        if ta is not None:
+            hwm = ta if hwm is None else max(hwm, ta)
         ra, rb = _rec_dt(a["rec"]), _rec_dt(b["rec"])
         if ta is None or tb is None or ra is None or rb is None:
             continue
+        # Only a jump that departs from the FRONTIER can bound a real loss. The PCR merge works at
+        # segment granularity, so a small island whose tape position sits inside a larger segment's
+        # span is emitted *after* that segment — behind the high-water mark. The stretch "after" such
+        # a backfill fragment was already emitted earlier, so the forward jump off it is not missing
+        # footage; skip anything starting more than a GOP behind the frontier.
+        if hwm is not None and ta < hwm - 1.0:
+            continue
         tc_d = tb - ta
         wall_d = (rb - ra).total_seconds()
-        # > 1.5 s is well past a single GOP gap (~0.5 s), so this is several GOPs the output skipped
-        if tc_d > 1.5 and wall_d > 0 and abs(tc_d - wall_d) <= max(1.0, 0.34 * tc_d):
+        # A forward record-run TC jump > 1.5 s (several GOPs, well past a ~0.5 s single-GOP gap) means
+        # that many seconds of *physical tape* sit between the two sides — recorded footage no capture
+        # holds. The wall clock only has to CONFIRM that real time elapsed; it may be much LARGER than
+        # tc_d when the original recording paused across the stretch (43 s of tape shot over 2 min of
+        # wall time is still 43 s of missing tape). Reject only when the wall clock is inconsistent —
+        # it barely moved or ran backwards while the TC ran on (a TC glitch / mis-set date, not real
+        # tape). A genuine camera stop never reaches here: record-run TC pauses while not recording, so
+        # tc_d ~ 0 and the > 1.5 s test already excludes it.
+        if tc_d > 1.5 and wall_d > 0 and tc_d - wall_d <= max(1.0, 0.34 * tc_d):
             out.append({"frame": b["frame"], "tag": a["tag"],
                         "tc0": a["tc"], "tc1": b["tc"],
                         "rec0": a["rec"], "rec1": b["rec"],
@@ -229,11 +251,29 @@ def build_plan(report):
     while True:
         seeded = False
         for seed in chain:
-            clean_js = [j for j in range(F[seed]["n"]) if not F[seed]["bad"][j]]
-            uncov = [j for j in clean_js if F[seed]["H"][j] not in covered]
-            if not clean_js or len(uncov) < 0.1 * len(clean_js):
+            fo = F[seed]
+            # Seed from the longest contiguous run of still-uncovered CLEAN GOPs. What matters is
+            # whether a capture holds real footage no walk has emitted yet — NOT what fraction of the
+            # capture that is. The old gate ("re-seed only if >10% of the capture is still uncovered")
+            # silently stranded a large spine capture's small unique tail: e.g. a minute of footage
+            # past the last find-back is ~2% of an hour-long capture, so it was never re-seeded, never
+            # emitted, and never flagged (no emitted GOP there -> no residual/lost) — the merged file
+            # just ended early. A near-duplicate re-capture, by contrast, leaves only its
+            # structurally-different file-edge GOP uncovered (a length-1 run), so require a run of >=2
+            # to avoid emitting that edge as a spurious twin island.
+            best_j = best_len = cur_j = cur_len = 0
+            for j in range(fo["n"]):
+                if not fo["bad"][j] and fo["H"][j] not in covered:
+                    if cur_len == 0:
+                        cur_j = j
+                    cur_len += 1
+                    if cur_len > best_len:
+                        best_len, best_j = cur_len, cur_j
+                else:
+                    cur_len = 0
+            if best_len < 2:
                 continue
-            path = walk(seed, uncov[0])
+            path = walk(seed, best_j)
             for (t, j) in path:
                 if not F[t]["bad"][j]:
                     covered.add(F[t]["H"][j])

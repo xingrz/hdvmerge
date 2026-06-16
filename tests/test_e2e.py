@@ -189,6 +189,37 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(plan.residuals, [])                    # cap1's damage at tape 35 repaired by cap2
         self.assertEqual({s.tag for s in plan.segments}, {"cap0", "cap1", "cap2"})
 
+    def test_a_spine_capture_s_small_unique_tail_is_not_orphaned(self):
+        # The long spine holds a unique tail past an internal dropout it can reach ONLY by re-seed: the
+        # walk rides a re-capture across the spine's damaged stretch, that re-capture ends where the
+        # spine has nothing tape-adjacent (the dropout), so the walk stops before the tail. The tail is
+        # a tiny fraction of the spine, so the old ">=90% covered -> skip re-seed" gate stranded it —
+        # the merge silently ended early with no gap or residual flagged. It must be recovered.
+        import datetime
+        self.tape = fx.simple_tape(100)
+        t0 = datetime.datetime(2007, 1, 1, 9, 0, 0)
+
+        def emit(cap, idx, bad=False):
+            cap.psi()
+            t = t0 + datetime.timedelta(seconds=idx)
+            cap.aux((t.year, t.month, t.day, t.hour, t.minute, t.second),
+                    tc=(t.minute, t.second, idx % 25))
+            cap.gop(fx.gop_es(idx, frames=4), cc_break=bad)
+
+        spine = fx.Capture()
+        for idx in range(0, 90):                 # first island, damaged across [85,90)
+            emit(spine, idx, bad=(85 <= idx < 90))
+        for idx in range(95, 100):               # a unique tail past a dropout the spine itself lacks
+            emit(spine, idx)
+        s = _write(self.tmp, "spine.m2t", spine.bytes())
+        re = _write(self.tmp, "recap.m2t", fx.render_capture(self.tape, 85, 95, (2007, 1, 1, 9, 0, 0)))
+
+        plan = planmod.build_plan(scanmod.analyze([s, re]))
+        self.assertEqual(plan.unused_sources, [])
+        self.assertEqual(plan.total_frames, 100 * 4)          # whole tape, tail included (not 95*4)
+        self.assertTrue(any(sg.tag == "spine" and sg.tc and sg.tc >= "00:01:35:00"
+                            for sg in plan.segments), "the spine's unique tail was orphaned")
+
     def test_byte_identical_recapture_is_not_emitted_twice(self):
         # capA and a byte-identical re-capture of the same tape: the twin adds no new tape and must
         # not be emitted as a duplicate island (it would double the output).

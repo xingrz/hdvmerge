@@ -131,10 +131,28 @@ class TestJsonOut(unittest.TestCase):
                    {"tc": "07:00:10:12", "rec": "2009-01-01 08:01:10", "frame": 112, "tag": "A"}]
         self.assertEqual(planmod._lost_spans(emitted, 25.0), [])
 
-    def test_lost_spans_skips_a_signalled_island_gap(self):
+    def test_lost_spans_flags_a_loss_across_an_island_boundary(self):
+        # a real loss can fall exactly on an island boundary: footage missing in every capture splits
+        # the tape into two islands stitched only by TC, with no GOP between them and no axis gap. The
+        # rec/TC co-advance still identifies it, so it must surface (it used to be silently skipped
+        # just because the join carried gap_before, hiding losses from the JSON consumer).
         emitted = [{"tc": "07:00:10:00", "rec": "2009-01-01 08:00:10", "frame": 100, "tag": "A"},
                    {"tc": "07:00:13:00", "rec": "2009-01-01 08:00:13", "frame": 112, "tag": "B",
                     "gap_before": True}]
+        lost = planmod._lost_spans(emitted, 25.0)
+        self.assertEqual(len(lost), 1)
+        self.assertEqual((lost[0]["tc0"], lost[0]["tc1"]), ("07:00:10:00", "07:00:13:00"))
+
+    def test_lost_spans_ignores_a_backfill_fragment_behind_the_frontier(self):
+        # the output reaches 20 s, then a small out-of-order island sits back at 5 s — the PCR merge
+        # works at segment granularity, so a fragment whose tape position falls inside a larger
+        # already-emitted segment is appended *after* it, behind the high-water mark. A forward jump
+        # off that backfilled island is not missing footage (the stretch was emitted earlier), so it
+        # must not be reported.
+        emitted = [{"tc": "07:00:20:00", "rec": "2009-01-01 08:00:20", "frame": 200, "tag": "A"},
+                   {"tc": "07:00:05:00", "rec": "2009-01-01 08:00:05", "frame": 212, "tag": "B",
+                    "gap_before": True},
+                   {"tc": "07:00:08:00", "rec": "2009-01-01 08:00:08", "frame": 213, "tag": "B"}]
         self.assertEqual(planmod._lost_spans(emitted, 25.0), [])
 
     def test_first_pcr_reads_the_tape_clock(self):
