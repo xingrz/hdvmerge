@@ -18,6 +18,17 @@ import shutil
 import subprocess
 
 _ERR = re.compile(r"damaged|invalid|Invalid|concealing|corrupt|forbidden|Marker", re.I)
+# A subset of _ERR matches that are NOT picture damage but the mpegts *demuxer* complaining about the
+# timestamp timeline. A byte-exact merge keeps each capture's own PTS/DTS base (only the CC nibble is
+# rewritten), so the DTS steps at every cross-capture splice; the demuxer then emits, per splice, both
+# "Packet corrupt (dts=...)" and the paired "corrupt input packet in stream N" (and on a backward step
+# the muxer's "non monotonically increasing dts"). These are seam timestamp discontinuities — they
+# affect some players' seeking, not the content. Genuine picture damage comes from the *decoder*
+# ("[mpeg2video] ... damaged/concealing/...") and is NOT matched here, so anything unrecognised falls
+# through to the decode bucket (we over-report rather than hide real damage).
+_CONTAINER = re.compile(
+    r"packet corrupt|corrupt input packet|non[- ]?monoton|monotonically increasing|packet mismatch",
+    re.I)
 _PTS = re.compile(r"pts_time:([0-9.]+)")
 
 
@@ -39,24 +50,38 @@ def _gop_of_pts(gops, pts90):
 
 
 def decode_errors(path, gops):
-    """Return ``{gop_index: decode_error_count}`` by decoding ``path`` with ffmpeg and
-    attributing each error to the GOP whose PTS range contains the frame it occurred on."""
+    """Decode ``path`` with ffmpeg and return ``(decode, container)``, each
+    ``{gop_index: count}`` attributing every error to the GOP whose PTS range contains the frame it
+    occurred on:
+
+    - ``decode`` — genuine MPEG-2 *decode* damage (concealed/damaged macroblocks, bad markers): the
+      decoder choking on the picture bitstream. This is the real single-copy-damage signal.
+    - ``container`` — mpegts *demuxer* timestamp complaints (``Packet corrupt (dts=...)``, non-
+      monotonic DTS). Not picture damage — see :data:`_CONTAINER`. Reported separately so a sound
+      byte-exact merge is never failed for a seam timestamp discontinuity.
+    """
     if not have_ffmpeg():
         raise RuntimeError("ffmpeg not found on PATH")
     proc = subprocess.Popen(
         ["ffmpeg", "-loglevel", "info", "-i", path, "-map", "0:v:0",
          "-vf", "showinfo", "-f", "null", "-"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    errs = {}
-    pending = 0
+    decode, container = {}, {}
+    p_dec = p_con = 0
     for line in proc.stderr:
         m = _PTS.search(line)
         if m and "showinfo" in line:
-            if pending:
+            if p_dec or p_con:
                 gi = _gop_of_pts(gops, int(round(float(m.group(1)) * 90000)))
-                errs[gi] = errs.get(gi, 0) + pending
-                pending = 0
+                if p_dec:
+                    decode[gi] = decode.get(gi, 0) + p_dec
+                if p_con:
+                    container[gi] = container.get(gi, 0) + p_con
+                p_dec = p_con = 0
         elif _ERR.search(line) and "showinfo" not in line and "MVs not available" not in line:
-            pending += 1
+            if _CONTAINER.search(line):
+                p_con += 1
+            else:
+                p_dec += 1
     proc.wait()
-    return errs
+    return decode, container

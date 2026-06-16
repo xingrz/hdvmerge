@@ -72,9 +72,13 @@ def verify_build(out_path, plan, decode=True):
       seam — a higher count means the build corrupted the stream.
     - **AUX survival** (always): the recording timecode is still readable at both ends.
     - **decode integrity** (when ``decode`` and ffmpeg present): decode the whole output and require
-      every decode error to coincide (within a few GOPs) with a *known* damaged GOP — a TS break in
-      the output or a planned residual. An error on clean content means the build produced an
-      invalid stream. On a clean merge that means zero decode errors.
+      every genuine *decode* error (concealed/damaged picture) to coincide (within a few GOPs) with a
+      *known* damaged GOP — a TS break in the output or a planned residual. An error on clean content
+      means the build produced an invalid stream. On a clean merge that means zero decode errors. The
+      mpegts demuxer's *timestamp* complaints (``Packet corrupt (dts=...)`` / non-monotonic DTS) are
+      counted separately as ``seam_discontinuities`` and never gate the build: a byte-exact merge
+      keeps each capture's own PTS/DTS base, so the DTS steps at every splice — a playback-seek
+      nuisance, not content damage.
     """
     from . import scan as scanmod
     idx = scanmod.scan_file(out_path)
@@ -85,7 +89,7 @@ def verify_build(out_path, plan, decode=True):
     ok = ok and cc == plan.emitted_cc and tei == plan.emitted_tei
 
     if decode and probe.have_ffmpeg():
-        errs = probe.decode_errors(out_path, idx.gops)
+        errs, container = probe.decode_errors(out_path, idx.gops)
         # GOP indices we expect ffmpeg to choke on: TS breaks in the output, plus planned residuals
         # (which include intra-frame-only damage the TS layer can't see), located by emitted frame.
         starts, f = [], 0
@@ -104,7 +108,14 @@ def verify_build(out_path, plan, decode=True):
                 known.add(k)
         allowed = {i + d for i in known for d in range(-_DEC_WINDOW, _DEC_WINDOW + 1)}
         unexplained = sum(c for gi, c in errs.items() if gi not in allowed)
-        info.update(decode_errors=sum(errs.values()), unexplained_decode=unexplained)
+        # seam timestamp discontinuities (demuxer "Packet corrupt (dts=...)") are inherent to a byte-
+        # exact merge that never rewrites PTS/DTS; report their count but never gate on them — they
+        # are not content damage.
+        # raw count of demuxer timestamp complaints — a stable scale indicator. (Mapping them to a
+        # precise seam position is unreliable: the output's PTS is non-monotonic across splices, which
+        # is the very thing being flagged, so GOP attribution can't be trusted here.)
+        info.update(decode_errors=sum(errs.values()), unexplained_decode=unexplained,
+                    seam_discontinuities=sum(container.values()))
         # A clean merge must decode cleanly, so any unexplained error there is a hard failure. A
         # merge that knowingly carries damage (residuals) is inherently noisy — ffmpeg cascades from
         # the real damage onto byte-clean GOPs — so decode integrity is informational there and the

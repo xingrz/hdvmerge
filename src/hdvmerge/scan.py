@@ -131,7 +131,7 @@ def _decode(idx, path):
     from . import probe
     if not probe.have_ffmpeg():
         raise RuntimeError("decode detection needs ffmpeg on PATH (it is used for detection only)")
-    errs = probe.decode_errors(path, idx.gops)
+    errs, _container = probe.decode_errors(path, idx.gops)   # demuxer timestamp msgs aren't GOP damage
     for g in idx.gops:
         g["dec"] = errs.get(g["i"], 0)
     idx.decoded = True

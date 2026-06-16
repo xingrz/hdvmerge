@@ -11,8 +11,34 @@ import types
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
-from hdvmerge import scan as scanmod, plan as planmod, jsonout, cli
+from hdvmerge import scan as scanmod, plan as planmod, jsonout, cli, probe
 from . import fixtures as fx
+
+
+class TestDecodeClassification(unittest.TestCase):
+    """probe must tell genuine MPEG-2 decode damage apart from the mpegts demuxer's timestamp
+    complaints, so a sound byte-exact merge is never failed for a seam DTS discontinuity."""
+
+    def test_demuxer_timestamp_messages_are_container_not_decode(self):
+        container = [   # match _ERR (via "corrupt"/"invalid") AND are demuxer timestamp noise
+            "[in#0/mpegts @ 0x7f] Packet corrupt (stream = 0, dts = 151876800).",
+            "[in#0/mpegts @ 0x7f] corrupt input packet in stream 0",
+            "[mpegts @ 0x7f] Application provided invalid, non monotonically increasing dts",
+        ]
+        # a pure muxer "Non-monotonous DTS" line carries none of the _ERR keywords, so it is ignored
+        # entirely (never counted as either) — which is also fine.
+        self.assertFalse(probe._ERR.search("[null @ 0x7f] Non-monotonous DTS in output stream"))
+        decode = [
+            "[mpeg2video @ 0x7f] ac-tex damaged at 12 5",
+            "[mpeg2video @ 0x7f] concealing 200 DC, 200 AC, 200 MV errors in I frame",
+            "[mpeg2video @ 0x7f] Invalid frame dimensions 0x0.",
+        ]
+        for line in container:
+            self.assertTrue(probe._ERR.search(line), line)        # still an error of interest
+            self.assertTrue(probe._CONTAINER.search(line), line)  # but classified as container
+        for line in decode:
+            self.assertTrue(probe._ERR.search(line), line)
+            self.assertFalse(probe._CONTAINER.search(line), line)  # genuine decode damage
 
 
 def _write(d, name, data):

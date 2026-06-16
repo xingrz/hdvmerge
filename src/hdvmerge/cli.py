@@ -171,6 +171,11 @@ def cmd_run(args):
             status = "info (noisy on a damaged merge — CC/TEI is the gate)"
         print("  decode integrity %s (%d errors, %d unexplained)"
               % (status, info.get("decode_errors", 0), info["unexplained_decode"]), file=msg)
+        if info.get("seam_discontinuities"):
+            print("  note: %d seam timestamp discontinuit%s (byte-exact splice; affects only some "
+                  "players' seeking, not content)"
+                  % (info["seam_discontinuities"],
+                     "y" if info["seam_discontinuities"] == 1 else "ies"), file=msg)
     if not ok:
         print("error: output self-check FAILED — the merged file may be corrupt", file=sys.stderr)
     return 0 if ok else 1
