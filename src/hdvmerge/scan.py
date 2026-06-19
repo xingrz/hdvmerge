@@ -178,6 +178,26 @@ def ensure_index(path, decode=False, force=False, cache_dir=None, use_cache=True
     return idx
 
 
+def needs_index(path, decode=False, force=False, cache_dir=None, use_cache=True):
+    """Whether :func:`ensure_index` would do real work for ``path`` this run — (re)scan the source
+    or run a decode pass — as opposed to returning a still-valid cached index untouched. Lets a
+    caller find the set of files actually about to be indexed *before* the slow pass starts (e.g. to
+    show a progress total). Cheap: at most a fingerprint (a head/tail hash, no full read) and a cache
+    read; never a full scan. Mirrors the cache-hit guard in :func:`ensure_index`, so the two agree."""
+    if not use_cache or force:
+        return True
+    ip = index_path(path, cache_dir)
+    if not os.path.exists(ip):
+        return True
+    try:
+        idx = load_index(ip)
+    except Exception:
+        return True   # unreadable/corrupt cache -> it'll be rebuilt
+    if idx.fingerprint != fingerprint(path) or idx.version != INDEX_VERSION:
+        return True   # source changed, or the index format moved on
+    return bool(decode and not idx.decoded)   # cached but a decode pass is still owed
+
+
 def align(sources):
     """Greedy, indel-tolerant anchoring onto one tape axis (GOP units) by content hash. Auto-
     derives the chain order. Returns ``(chain, shifts, gaps)``."""

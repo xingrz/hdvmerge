@@ -54,6 +54,17 @@ class TestEndToEnd(unittest.TestCase):
         scanmod.ensure_index(files[0], on_file=lambda i, cached=False, **k: marks.append(cached))
         self.assertEqual(marks, [True])                     # served from cache, not rebuilt
 
+    def test_needs_index_predicts_the_cache_skip(self):
+        f = self._captures()[0]
+        self.assertTrue(scanmod.needs_index(f))             # no cache yet -> work to do
+        scanmod.ensure_index(f)                             # build + cache it
+        self.assertFalse(scanmod.needs_index(f))            # now served from cache, no work
+        self.assertTrue(scanmod.needs_index(f, force=True))     # force always reindexes
+        self.assertTrue(scanmod.needs_index(f, use_cache=False))  # cache off always works
+        # a changed source invalidates the cache (the fingerprint shifts)
+        _write(self.tmp, "capA.m2t", fx.render_capture(self.tape, 0, 30, (2007, 1, 1, 9, 0, 0)))
+        self.assertTrue(scanmod.needs_index(f))
+
     def test_clean_merge(self):
         rep = scanmod.analyze(self._captures())
         self.assertEqual(len(rep.sources), 2)
