@@ -61,6 +61,34 @@ def verify(path):
     return bool(head and tail), info
 
 
+def _duplicate_frames(gops):
+    """Tape moments (tc+rec) RE-emitted out of tape order — the same moment appears again after the
+    timeline has moved past it (a backward-TC repeat at a splice). That is a duplicated frame: a
+    redundant clean copy stitched in at an already-covered position; two byte-different copies of one
+    moment are the cause (same tc+rec, different hash), so the moment — not the hash — is the key.
+
+    Only **non-contiguous** repeats count: a couple of adjacent GOPs that share one (coarse/edge) AUX
+    (tc, rec) label are a timecode-attribution stall, not a re-emission, so a run of identical positions
+    is ignored — only occurrences separated by other frames are a real duplicate."""
+    from collections import defaultdict
+    pos = defaultdict(list)
+    for i, g in enumerate(gops):
+        if g.get("tc") and g.get("rec"):
+            pos[(g["tc"], g["rec"])].append(i)
+    out = []
+    for (tc, rec), idxs in pos.items():
+        if idxs[-1] - idxs[0] + 1 > len(idxs):   # not a single contiguous run -> a real re-emission
+            out.append({"tc": tc, "rec": rec, "copies": len(idxs)})
+    return sorted(out, key=lambda d: d["tc"] or "")
+
+
+def find_duplicate_frames(path):
+    """Scan an already-built master and return its duplicated frames (see :func:`_duplicate_frames`).
+    No plan needed — works on any exported file, so it can audit masters built by older versions."""
+    from . import scan as scanmod
+    return _duplicate_frames(scanmod.scan_file(path).gops)
+
+
 def verify_build(out_path, plan, decode=True):
     """Post-build integrity check of the merged output. Returns ``(ok, info)``.
 
@@ -85,8 +113,10 @@ def verify_build(out_path, plan, decode=True):
     cc = sum(g["cc"] for g in idx.gops)
     tei = sum(g["tei"] for g in idx.gops)
     ok, info = verify(out_path)
-    info.update(cc=cc, expected_cc=plan.emitted_cc, tei=tei, expected_tei=plan.emitted_tei)
-    ok = ok and cc == plan.emitted_cc and tei == plan.emitted_tei
+    dups = _duplicate_frames(idx.gops)
+    info.update(cc=cc, expected_cc=plan.emitted_cc, tei=tei, expected_tei=plan.emitted_tei,
+                duplicate_frames=dups)
+    ok = ok and cc == plan.emitted_cc and tei == plan.emitted_tei and not dups
 
     if decode and probe.have_ffmpeg():
         errs, container = probe.decode_errors(out_path, idx.gops)

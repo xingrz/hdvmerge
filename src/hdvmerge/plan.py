@@ -326,6 +326,7 @@ def build_plan(report):
         return rs
 
     segs, unused = _assemble_runs([coalesce(p) for p in runs])
+    segs = _dedup_islands(segs, F)
 
     # adjacency sanity: every cross-file seam that is NOT an island boundary must be tape-adjacent
     bad_seams = 0
@@ -367,6 +368,39 @@ def build_plan(report):
                 gaps=report.gaps, total_frames=frame, fps=fps, bad_seams=bad_seams,
                 emitted_cc=emitted_cc, emitted_tei=emitted_tei, unused_sources=unused,
                 video_pid=report.source(chain[0]).video_pid, lost=_lost_spans(emitted, fps))
+
+
+def _dedup_islands(segs, F):
+    """Drop a segment whose every frame is already carried by a LONGER segment — a redundant island.
+
+    A tape moment that two captures read into byte-different but equally-clean GOPs (a *divergence*:
+    same tc+rec, different hash) can't be recognised as one position by the hash-based ``covered`` set,
+    so the walk may seed the second copy as its own island. Emitting it duplicates those frames in the
+    output (a backward-TC repeat at the splice). Key by **(tc, rec)** — the position the hash can't
+    unify — and drop a segment only when EVERY one of its moments survives in another, longer segment,
+    so a unique frame (its own moment's sole/longest carrier) is never dropped. (Identical-hash repeats
+    are already deduped upstream by ``covered``; this only catches the different-hash case.)"""
+    moments, owner = [], {}     # (tc, rec) -> (length, seg_index) of its longest carrier
+    for i, sg in enumerate(segs):
+        g = F[sg.tag]["gops"]
+        ms = [(g[j].get("tc"), g[j].get("rec")) for j in range(sg.j0, sg.j1 + 1)]
+        moments.append(ms)
+        for m in ms:
+            if m not in owner or (len(ms), i) > owner[m]:
+                owner[m] = (len(ms), i)
+    out, gap_pending = [], False
+    for i, sg in enumerate(segs):
+        if moments[i] and not any(owner[m][1] == i for m in moments[i]):
+            gap_pending = True          # fully-redundant island -> drop it
+            continue
+        if gap_pending and out and sg.j0 > 0:
+            # a segment was removed before this one — recompute the seam by tape-adjacency to the new
+            # predecessor (gap_before True iff not adjacent; never under-mark, so the build won't
+            # re-phase across a real discontinuity)
+            sg.gap_before = F[sg.tag]["H"][sg.j0 - 1] != F[out[-1].tag]["H"][out[-1].j1]
+        gap_pending = False
+        out.append(sg)
+    return out
 
 
 def _assemble_runs(run_segs):

@@ -153,6 +153,22 @@ class TestEndToEnd(unittest.TestCase):
         plan = planmod.build_plan(rep)
         self.assertTrue(any(r["tag"] == "capA" and r.get("dec") for r in plan.residuals))
 
+    def test_divergent_island_duplicate_is_deduped(self):
+        # capLong holds tape [0,40) clean; capShort holds [20,24) as byte-DIFFERENT but still-clean
+        # copies (a divergence). The hash-based walk emits capLong's run AND re-seeds capShort's [20,24)
+        # as an island (its hashes look uncovered), duplicating moments 20-23 in the output. The dedup
+        # must collapse each tape moment to one frame (keeping the longer capLong copy), losing none.
+        capLong = fx.render_capture(self.tape, 0, 40, (2007, 1, 1, 9, 0, 0))
+        capShort = fx.render_capture(self.tape, 20, 24, (2007, 1, 1, 9, 0, 0),
+                                     damage={i: "corrupt" for i in range(20, 24)})
+        a = _write(self.tmp, "long.m2t", capLong)
+        b = _write(self.tmp, "short.m2t", capShort)
+        plan = planmod.build_plan(scanmod.analyze([a, b]))
+        out = self._build(plan)
+        self.assertEqual(verifymod.find_duplicate_frames(out), [])     # each tape moment emitted once
+        self.assertEqual(len(scanmod.scan_file(out).gops), 40)          # whole tape [0,40), nothing lost
+        self.assertEqual(plan.bad_seams, 0)
+
     def test_decode_flag_on_a_byte_clean_twin_is_not_a_residual(self):
         # capA (the spine) is byte-divergent at tape 23, so at tape 24 the walk can't hash-hop to capB
         # and emits capA's own GOP 24 — which then carries a decode flag (an ffmpeg cascade) even though
