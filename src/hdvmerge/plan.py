@@ -135,6 +135,18 @@ def _lost_spans(emitted, fps):
 
 
 def _prep(report):
+    # `dec` (ffmpeg decode pass) over-reports: it cascades from a lost reference frame onto later,
+    # byte-CLEAN GOPs, and isn't deterministic across ffmpeg builds (a GOP can read clean on one machine
+    # and `dec` on another). So a `dec` flag is discredited when the byte-identical GOP is clean in some
+    # capture: identical ES bytes (same hash) decode to an identical picture, so the flag is a
+    # capture-local decoder-state artifact, not damage. probe.py already intends this ("selected by hash
+    # regardless of its dec flag"); enforcing it here keeps a clean twin from being stranded as a
+    # residual when the walk can't hash-locate it, and makes the result robust to ffmpeg variance. Real
+    # intra-GOP damage changes the bytes -> a unique hash absent from clean_h -> never discredited. CC
+    # and TEI are deterministic TS-layer parsing (a real packet loss changes the bytes too) and always
+    # count.
+    clean_h = {g["h"] for tag in report.chain for g in report.source(tag).gops
+               if g["cc"] == 0 and g["tei"] == 0 and g.get("dec", 0) == 0}
     F = {}
     for tag in report.chain:
         s = report.source(tag)
@@ -142,10 +154,9 @@ def _prep(report):
         hpos = {}
         for j, h in enumerate(H):
             hpos.setdefault(h, []).append(j)
-        # A GOP is damaged if the TS layer broke (cc/tei) or the decode pass flagged it (dec). The
-        # build re-phases CC so clean seams carry no break and ffmpeg decodes straight through them,
-        # so there is no seam over-report to discount — a decode flag is genuine single-copy damage.
-        bad = [(g["cc"] > 0 or g["tei"] > 0 or g.get("dec", 0) > 0) for g in s.gops]
+        bad = [(g["cc"] > 0 or g["tei"] > 0
+                or (g.get("dec", 0) > 0 and g["h"] not in clean_h))
+               for g in s.gops]
         F[tag] = {"s": s, "gops": s.gops, "n": len(s.gops), "H": H, "hpos": hpos, "bad": bad}
     return F
 

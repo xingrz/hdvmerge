@@ -153,6 +153,21 @@ class TestEndToEnd(unittest.TestCase):
         plan = planmod.build_plan(rep)
         self.assertTrue(any(r["tag"] == "capA" and r.get("dec") for r in plan.residuals))
 
+    def test_decode_flag_on_a_byte_clean_twin_is_not_a_residual(self):
+        # capA (the spine) is byte-divergent at tape 23, so at tape 24 the walk can't hash-hop to capB
+        # and emits capA's own GOP 24 — which then carries a decode flag (an ffmpeg cascade) even though
+        # capB holds the byte-IDENTICAL GOP 24 clean. Identical bytes decode identically, so the flag is
+        # a capture-local artifact, not damage: it must NOT become a residual. (probe.py intends this
+        # for dec; enforced in _prep so the clean twin isn't stranded.)
+        rep = scanmod.analyze(self._captures(dmgA={23: "corrupt"}))
+        a, b = rep.source("capA"), rep.source("capB")
+        twin = next(g for g in b.gops if g["tc"] == a.gops[24]["tc"])
+        self.assertEqual(a.gops[24]["h"], twin["h"])          # byte-identical across the two captures
+        self.assertEqual((twin["cc"], twin["tei"], twin.get("dec", 0)), (0, 0, 0))  # clean in capB
+        a.gops[24]["dec"] = 4                                  # ffmpeg cascades a decode flag onto it
+        plan = planmod.build_plan(rep)
+        self.assertEqual(plan.residuals, [])                  # the clean twin clears it — not damage
+
     def test_rephasing_makes_a_built_merge_reread_seamless(self):
         # Re-feed a built merge as a single source: re-phasing made CC continuous at the seam, so
         # the output re-scans with zero continuity breaks (no markers, no residuals).
