@@ -113,15 +113,20 @@ class Capture:
         return bytes(self.buf)
 
 
-def render_capture(tape, start, stop, base_dt, damage=None):
+def render_capture(tape, start, stop, base_dt, damage=None, skip=None):
     """Render a capture of tape GOPs [start, stop). ``tape`` is a list of dicts with keys
     frames/closed/broken. ``damage`` maps a tape index -> 'cc' or 'corrupt'. ``base_dt`` is the
-    (y,mo,d,h,mi,s) recording time at tape index 0 (advances ~1s per GOP)."""
+    (y,mo,d,h,mi,s) recording time at tape index 0 (advances ~1s per GOP). ``skip`` is a set of tape
+    indices to omit from the file while keeping the continuity counter unbroken — a dropout where the
+    deck read no GOPs for that stretch, so its file-adjacent neighbours straddle a tape (TC/rec) jump
+    with no CC break, exactly like a record-pause seam."""
     cap = Capture()
     y, mo, d, h, mi, s = base_dt
     import datetime
     t0 = datetime.datetime(y, mo, d, h, mi, s)
     for idx in range(start, stop):
+        if skip and idx in skip:
+            continue
         cap.psi()                          # repeat PAT/PMT before every GOP, like real HDV, so a
                                            # merge that starts mid-file still carries the tables
         t = t0 + datetime.timedelta(seconds=idx)

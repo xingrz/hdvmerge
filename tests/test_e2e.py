@@ -124,6 +124,29 @@ class TestEndToEnd(unittest.TestCase):
         self.assertTrue(plan.divergences)
         self.assertTrue(any(c["tag"] == "capA" for d in plan.divergences for c in d["copies"]))
 
+    def test_spine_dropout_at_divergence_is_filled_in_order(self):
+        # The spine capture diverges byte-wise at tape 24 AND drops tape [25,28); two other captures
+        # hold those GOPs and agree at 24. The walk must follow the 2-vs-1 majority at the seam and
+        # emit the held GOPs in tape order — not ride the spine's same-file contiguity across its own
+        # hole, which would strand them as an out-of-tape-order backfill island and mis-flag the jump
+        # "recorded but unreadable in every capture". (A byte-identical re-encode shares one hash and
+        # never diverges, so same-file contiguity still wins for it — see the clean-merge tests.)
+        dt = (2007, 1, 1, 9, 0, 0)
+        # capA: one continuous-CC stream that is byte-divergent at tape 24 and then drops [25,28) —
+        # tape 24 stays CLEAN (a real seam frame, not damaged), and 24->28 is a pure TC/rec jump.
+        capA = fx.render_capture(self.tape, 0, 40, dt, damage={24: "corrupt"}, skip={25, 26, 27})
+        a = _write(self.tmp, "capA.m2t", capA)
+        b = _write(self.tmp, "capB.m2t", fx.render_capture(self.tape, 10, 40, dt))
+        c = _write(self.tmp, "capC.m2t", fx.render_capture(self.tape, 10, 40, dt))
+        rep = scanmod.analyze([a, b, c])
+        self.assertEqual(rep.chain[0], "capA")               # spine = earliest tape position
+        plan = planmod.build_plan(rep)
+        self.assertTrue(plan.divergences)                    # the seam divergence is still recorded
+        self.assertEqual(plan.lost, [])                      # held by capB/capC, so nothing is "lost"
+        self.assertEqual(plan.bad_seams, 0)
+        out_idx = scanmod.scan_file(self._build(plan))
+        self.assertEqual(len(out_idx.gops), 40)              # whole tape [0,40) emitted, in order
+
     def test_decode_flag_becomes_residual(self):
         rep = scanmod.analyze(self._captures())
         rep.source("capA").gops[5]["dec"] = 3

@@ -213,6 +213,18 @@ def build_plan(report):
             # hash held by the most clean copies
             if same is not None and not F[t]["bad"][same[1]]:
                 true_h = F[t]["H"][same[1]]
+                # ...but don't ride this file across its OWN dropout at a divergence: when clean
+                # interior copies disagree on the next GOP and the same-file hash is a strict minority,
+                # the same-file "next" is a post-dropout resync that skips tape the majority still
+                # holds. Follow the majority so those frames emit here, in order — otherwise the walk
+                # jumps the hole, the held frames surface only as an out-of-tape-order backfill island,
+                # and _lost_spans wrongly flags the jump "recorded but unreadable in every capture". A
+                # byte-identical re-encode shares one hash (no divergence), so same-file trust stands.
+                if interior:
+                    counts = Counter(F[Q]["H"][cj] for Q, cj in interior)
+                    maj_h, maj_n = counts.most_common(1)[0]
+                    if maj_h != true_h and counts.get(true_h, 0) < maj_n:
+                        true_h = maj_h
             else:
                 pool = clean or cands
                 true_h = Counter(F[Q]["H"][cj] for Q, cj in pool).most_common(1)[0][0]
