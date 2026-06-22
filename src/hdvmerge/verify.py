@@ -89,6 +89,81 @@ def find_duplicate_frames(path):
     return _duplicate_frames(scanmod.scan_file(path).gops)
 
 
+def decode_scan(out_path, idx, plan):
+    """Decode ``out_path`` with ffmpeg and classify every error against ``plan``. Returns a dict with
+    the ``decode_errors`` / ``unexplained_decode`` / ``seam_discontinuities`` counts plus
+    ``decode_error_spots`` — the located, cause-classified, cascade-coalesced decode-error spots; or
+    ``{}`` when ffmpeg is absent.
+
+    Shared by :func:`verify_build` (the merged output against the build's plan) and the standalone
+    single-file ``verify`` (a master against its own single-source plan — *conservative*: with no build
+    plan to name them, a divergence cut on otherwise-clean content reads as ``unexplained``). Each spot
+    is ``{frame, tc, rec, kind, count}``; ``kind`` is ``residual`` (intra-frame damage no capture had
+    clean), ``stitch`` (a fresh-start island edge — a real gap or a divergence), ``transport`` (a TS
+    break), or ``unexplained`` (an error on content nothing in the plan explains — the one to worry
+    about). ``frame`` is the emitted frame index; ``tc``/``rec`` come from the GOP at the spot."""
+    if not probe.have_ffmpeg():
+        return {}
+    errs, container = probe.decode_errors(out_path, idx.gops)
+    # emitted-frame start of each GOP, so a plan position (residual/island, in emitted frames) maps to
+    # the GOP ffmpeg chokes on.
+    starts, f = [], 0
+    for g in idx.gops:
+        starts.append(f)
+        f += g["npic"]
+    # The three legitimate reasons a GOP may fail to decode, kept SEPARATE so each surfaced error can
+    # name its cause: a TS break in the output, a planned residual (intra-frame damage no capture has
+    # clean), or the first GOP of a stitched-in island (it starts fresh — across a real gap or a
+    # divergence — with no prior reference frame). All located by emitted frame position.
+    transport = {i for i, g in enumerate(idx.gops) if g["cc"] > 0 or g["tei"] > 0}
+    residual_g, island_g = set(), set()
+    for fr in [r["frame"] for r in plan.residuals]:
+        k = bisect.bisect_right(starts, fr) - 1
+        if 0 <= k < len(idx.gops):
+            residual_g.add(k)
+    for fr in [sg.frame0 for sg in plan.segments if sg.gap_before]:
+        k = bisect.bisect_right(starts, fr) - 1
+        if 0 <= k < len(idx.gops):
+            island_g.add(k)
+    known = transport | residual_g | island_g
+    allowed = {i + d for i in known for d in range(-_DEC_WINDOW, _DEC_WINDOW + 1)}
+    unexplained = sum(c for gi, c in errs.items() if gi not in allowed)
+
+    # Locate every decode error: attribute it to the nearest known cause (within the cascade window) and
+    # coalesce a cascade of adjacent same-cause GOPs into ONE spot carrying a tape timecode + rec time —
+    # so a UI / CLI can mark exactly where a master still decodes badly and what to do: residual or
+    # stitch ⇒ try another capture there (a clean copy / a pass that resolves the divergence);
+    # unexplained ⇒ a real concern, an error on content nothing explains.
+    def _cause(gi):
+        near = lambda s: any(gi + d in s for d in range(-_DEC_WINDOW, _DEC_WINDOW + 1))
+        if near(residual_g):
+            return "residual"
+        if near(transport):
+            return "transport"
+        if near(island_g):
+            return "stitch"
+        return "unexplained"
+    spots = []
+    for gi in sorted(errs):
+        g = idx.gops[gi]
+        kind = _cause(gi)
+        if spots and kind == spots[-1]["kind"] and gi - spots[-1]["_gi"] <= _DEC_WINDOW:
+            spots[-1]["count"] += errs[gi]
+            spots[-1]["_gi"] = gi
+        else:
+            spots.append({"_gi": gi, "frame": starts[gi], "tc": g["tc"], "rec": g.get("rec"),
+                          "kind": kind, "count": errs[gi]})
+    for s in spots:
+        del s["_gi"]
+
+    # seam timestamp discontinuities (demuxer "Packet corrupt (dts=...)") are inherent to a byte-exact
+    # merge that never rewrites PTS/DTS; report their count but never gate on them — not content damage.
+    # (Their POSITION is unreliable: the output's PTS is non-monotonic across a splice — the very thing
+    # being flagged — so GOP attribution can't be trusted; hence a count only, unlike the decode spots.)
+    return {"decode_errors": sum(errs.values()), "unexplained_decode": unexplained,
+            "seam_discontinuities": sum(container.values()), "decode_error_spots": spots}
+
+
 def verify_build(out_path, plan, decode=True):
     """Post-build integrity check of the merged output. Returns ``(ok, info)``.
 
@@ -104,9 +179,10 @@ def verify_build(out_path, plan, decode=True):
       *known* damaged GOP — a TS break in the output or a planned residual. An error on clean content
       means the build produced an invalid stream. On a clean merge that means zero decode errors. The
       mpegts demuxer's *timestamp* complaints (``Packet corrupt (dts=...)`` / non-monotonic DTS) are
-      counted separately as ``seam_discontinuities`` and never gate the build: a byte-exact merge
-      keeps each capture's own PTS/DTS base, so the DTS steps at every splice — a playback-seek
-      nuisance, not content damage.
+      counted separately as ``seam_discontinuities`` and never gate the build: the byte-exact merge
+      preserves the tape's own PTS/DTS, and overlapping captures carry identical timestamps, so a
+      cross-capture join is usually continuous — the few remaining steps are non-monotonic points in
+      the tape's own recorded timestamps (NOT one per splice), a playback-seek nuisance, not damage.
     """
     from . import scan as scanmod
     idx = scanmod.scan_file(out_path)
@@ -118,39 +194,15 @@ def verify_build(out_path, plan, decode=True):
                 duplicate_frames=dups)
     ok = ok and cc == plan.emitted_cc and tei == plan.emitted_tei and not dups
 
-    if decode and probe.have_ffmpeg():
-        errs, container = probe.decode_errors(out_path, idx.gops)
-        # GOP indices we expect ffmpeg to choke on: TS breaks in the output, plus planned residuals
-        # (which include intra-frame-only damage the TS layer can't see), located by emitted frame.
-        starts, f = [], 0
-        for g in idx.gops:
-            starts.append(f)
-            f += g["npic"]
-        # GOP indices ffmpeg may legitimately choke on: TS breaks in the output, planned residuals,
-        # and the first GOP of each stitched-in island (it starts fresh across a real gap, with no
-        # prior reference frame) — all located by their emitted frame position.
-        known = {i for i, g in enumerate(idx.gops) if g["cc"] > 0 or g["tei"] > 0}
-        marks = [r["frame"] for r in plan.residuals]
-        marks += [sg.frame0 for sg in plan.segments if sg.gap_before]
-        for fr in marks:
-            k = bisect.bisect_right(starts, fr) - 1
-            if 0 <= k < len(idx.gops):
-                known.add(k)
-        allowed = {i + d for i in known for d in range(-_DEC_WINDOW, _DEC_WINDOW + 1)}
-        unexplained = sum(c for gi, c in errs.items() if gi not in allowed)
-        # seam timestamp discontinuities (demuxer "Packet corrupt (dts=...)") are inherent to a byte-
-        # exact merge that never rewrites PTS/DTS; report their count but never gate on them — they
-        # are not content damage.
-        # raw count of demuxer timestamp complaints — a stable scale indicator. (Mapping them to a
-        # precise seam position is unreliable: the output's PTS is non-monotonic across splices, which
-        # is the very thing being flagged, so GOP attribution can't be trusted here.)
-        info.update(decode_errors=sum(errs.values()), unexplained_decode=unexplained,
-                    seam_discontinuities=sum(container.values()))
-        # A clean merge must decode cleanly, so any unexplained error there is a hard failure. A
-        # merge that knowingly carries damage (residuals) is inherently noisy — ffmpeg cascades from
-        # the real damage onto byte-clean GOPs — so decode integrity is informational there and the
-        # CC/TEI check (which proved re-phasing introduced no break) is the gate.
-        info["decode_gate"] = not plan.residuals
-        if not plan.residuals:
-            ok = ok and unexplained == 0
+    if decode:
+        d = decode_scan(out_path, idx, plan)
+        if d:                                       # ffmpeg present -> a real decode pass ran
+            info.update(d)
+            # A clean merge must decode cleanly, so any unexplained error there is a hard failure. A
+            # merge that knowingly carries damage (residuals) is inherently noisy — ffmpeg cascades from
+            # the real damage onto byte-clean GOPs — so decode integrity is informational there and the
+            # CC/TEI check (which proved re-phasing introduced no break) is the gate.
+            info["decode_gate"] = not plan.residuals
+            if not plan.residuals:
+                ok = ok and d["unexplained_decode"] == 0
     return ok, info
