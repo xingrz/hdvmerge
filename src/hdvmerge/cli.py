@@ -46,19 +46,26 @@ def _discover(inputs):
 
 
 class _Bar:
-    def __init__(self, label):
+    """A one-line stderr progress bar. Defaults count bytes (shown as MB, suppressed under
+    ``_PROGRESS_MIN``); pass ``unit="fr", scale=0, min_total=N`` for the frame-counted decode passes,
+    whose totals are small frame counts rather than byte sizes."""
+
+    def __init__(self, label, unit="MB", scale=20, min_total=_PROGRESS_MIN):
         self.label = label
+        self.unit = unit
+        self.scale = scale
+        self.min_total = min_total
         self.tty = sys.stderr.isatty()
         self.shown = -1
 
     def __call__(self, done, total):
-        if total < _PROGRESS_MIN:
+        if total < self.min_total:
             return
         pct = min(100, int(100 * done / max(1, total)))
         if self.tty:
             if pct != self.shown:
-                sys.stderr.write("\r  %-28s %3d%% (%d/%d MB)"
-                                 % (self.label, pct, done >> 20, total >> 20))
+                sys.stderr.write("\r  %-28s %3d%% (%d/%d %s)"
+                                 % (self.label, pct, done >> self.scale, total >> self.scale, self.unit))
                 sys.stderr.flush()
                 self.shown = pct
         else:
@@ -84,9 +91,11 @@ def _analyse(files, decode, cache_dir=None, use_cache=True, status_stream=None):
     ``status_stream`` (stdout by default; pass stderr in ``--json`` mode to keep stdout clean)."""
     out = status_stream or sys.stdout
     bar = _Bar("indexing")
+    dbar = _Bar("decoding", unit="fr", scale=0, min_total=500)   # decode reports frames, not bytes
 
     def on_file(idx, cached=False, note=None, path=None):
         bar.clear()
+        dbar.clear()
         if idx is None:
             print("  %-22s SKIP (not a TS with MPEG video)" % os.path.basename(path or "?"), file=out)
             return
@@ -105,7 +114,7 @@ def _analyse(files, decode, cache_dir=None, use_cache=True, status_stream=None):
               % (idx.tag, len(idx.gops), cc, tei, extra, span, tcspan), file=out)
 
     rep = scanmod.analyze(files, decode=decode, cache_dir=cache_dir, use_cache=use_cache,
-                          on_progress=bar, on_file=on_file)
+                          on_progress=bar, on_file=on_file, on_decode_progress=dbar)
     plan = planmod.build_plan(rep)
     return rep, plan
 
@@ -152,7 +161,12 @@ def cmd_run(args):
     with open(report_path, "w") as f:
         f.write(md)
     print("verifying output…", file=sys.stderr)
-    ok, info = verifymod.verify_build(out, plan, decode=decode)
+    vsbar = _Bar("verify: re-scan")
+    vdbar = _Bar("verify: decode", unit="fr", scale=0, min_total=500)
+    ok, info = verifymod.verify_build(out, plan, decode=decode,
+                                      on_scan_progress=vsbar, on_decode_progress=vdbar)
+    vsbar.clear()
+    vdbar.clear()
     print("wrote %s (%.2f GB) and %s" % (out, os.path.getsize(out) / 1e9, os.path.basename(report_path)),
           file=msg)
     print("  AUX timecode %s — head %s / TC %s, tail %s / TC %s"

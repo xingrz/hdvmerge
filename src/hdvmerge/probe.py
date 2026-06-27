@@ -49,7 +49,7 @@ def _gop_of_pts(gops, pts90):
     return ans
 
 
-def decode_errors(path, gops):
+def decode_errors(path, gops, on_progress=None):
     """Decode ``path`` with ffmpeg and return ``(decode, container)``, each
     ``{gop_index: count}`` attributing every error to the GOP whose PTS range contains the frame it
     occurred on:
@@ -59,6 +59,11 @@ def decode_errors(path, gops):
     - ``container`` — mpegts *demuxer* timestamp complaints (``Packet corrupt (dts=...)``, non-
       monotonic DTS). Not picture damage — see :data:`_CONTAINER`. Reported separately so a sound
       byte-exact merge is never failed for a seam timestamp discontinuity.
+
+    ``on_progress(done, total)``, if given, is called as the decode advances: ``-vf showinfo`` logs
+    one line per decoded frame (the very lines we already iterate to attribute errors), so counting
+    them tracks position at no extra ffmpeg cost. ``total`` is the GOPs' picture count; calls are
+    throttled to whole-percent steps so a JSON-RPC progress channel stays quiet.
     """
     if not have_ffmpeg():
         raise RuntimeError("ffmpeg not found on PATH")
@@ -68,9 +73,17 @@ def decode_errors(path, gops):
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     decode, container = {}, {}
     p_dec = p_con = 0
+    total = sum(g.get("npic", 0) for g in gops)
+    nframes, last_pct = 0, -1
     for line in proc.stderr:
         m = _PTS.search(line)
         if m and "showinfo" in line:
+            nframes += 1
+            if on_progress and total:
+                pct = nframes * 100 // total
+                if pct != last_pct:
+                    last_pct = pct
+                    on_progress(min(nframes, total), total)
             if p_dec or p_con:
                 gi = _gop_of_pts(gops, int(round(float(m.group(1)) * 90000)))
                 if p_dec:

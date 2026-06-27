@@ -89,7 +89,7 @@ def find_duplicate_frames(path):
     return _duplicate_frames(scanmod.scan_file(path).gops)
 
 
-def decode_scan(out_path, idx, plan):
+def decode_scan(out_path, idx, plan, on_progress=None):
     """Decode ``out_path`` with ffmpeg and classify every error against ``plan``. Returns a dict with
     the ``decode_errors`` / ``unexplained_decode`` / ``seam_discontinuities`` counts plus
     ``decode_error_spots`` — the located, cause-classified, cascade-coalesced decode-error spots; or
@@ -104,7 +104,7 @@ def decode_scan(out_path, idx, plan):
     about). ``frame`` is the emitted frame index; ``tc``/``rec`` come from the GOP at the spot."""
     if not probe.have_ffmpeg():
         return {}
-    errs, container = probe.decode_errors(out_path, idx.gops)
+    errs, container = probe.decode_errors(out_path, idx.gops, on_progress=on_progress)
     # emitted-frame start of each GOP, so a plan position (residual/island, in emitted frames) maps to
     # the GOP ffmpeg chokes on.
     starts, f = [], 0
@@ -164,8 +164,12 @@ def decode_scan(out_path, idx, plan):
             "seam_discontinuities": sum(container.values()), "decode_error_spots": spots}
 
 
-def verify_build(out_path, plan, decode=True):
+def verify_build(out_path, plan, decode=True, on_scan_progress=None, on_decode_progress=None):
     """Post-build integrity check of the merged output. Returns ``(ok, info)``.
+
+    The check is two full-file passes — a byte re-scan (``on_scan_progress``) then, when ``decode``
+    and ffmpeg are present, an ffmpeg decode (``on_decode_progress``) — each reporting ``(done,
+    total)`` so a caller can show progress for what is otherwise a long silent step.
 
     Because ``build`` rewrites the continuity counters, this is the net that catches any way our
     handling of MPEG-TS could be wrong:
@@ -185,7 +189,7 @@ def verify_build(out_path, plan, decode=True):
       the tape's own recorded timestamps (NOT one per splice), a playback-seek nuisance, not damage.
     """
     from . import scan as scanmod
-    idx = scanmod.scan_file(out_path)
+    idx = scanmod.scan_file(out_path, on_progress=on_scan_progress)
     cc = sum(g["cc"] for g in idx.gops)
     tei = sum(g["tei"] for g in idx.gops)
     ok, info = verify(out_path)
@@ -195,7 +199,7 @@ def verify_build(out_path, plan, decode=True):
     ok = ok and cc == plan.emitted_cc and tei == plan.emitted_tei and not dups
 
     if decode:
-        d = decode_scan(out_path, idx, plan)
+        d = decode_scan(out_path, idx, plan, on_progress=on_decode_progress)
         if d:                                       # ffmpeg present -> a real decode pass ran
             info.update(d)
             # A clean merge must decode cleanly, so any unexplained error there is a hard failure. A

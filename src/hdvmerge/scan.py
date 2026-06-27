@@ -127,25 +127,29 @@ def _attach_rec(gops, aux):
         g["rec"], g["tc"] = best[1], best[2]
 
 
-def _decode(idx, path):
+def _decode(idx, path, on_progress=None):
     from . import probe
     if not probe.have_ffmpeg():
         raise RuntimeError("decode detection needs ffmpeg on PATH (it is used for detection only)")
-    errs, _container = probe.decode_errors(path, idx.gops)   # demuxer timestamp msgs aren't GOP damage
+    errs, _container = probe.decode_errors(path, idx.gops, on_progress=on_progress)   # demuxer timestamp msgs aren't GOP damage
     for g in idx.gops:
         g["dec"] = errs.get(g["i"], 0)
     idx.decoded = True
 
 
 def ensure_index(path, decode=False, force=False, cache_dir=None, use_cache=True,
-                 on_progress=None, on_file=None):
+                 on_progress=None, on_file=None, on_decode_progress=None):
     """Return the FileIndex for ``path``, building/refreshing its index only if the source
     content changed (or ``force``). Caches the decode pass too. ``idx.src_path`` carries the
     absolute source path for the build (not persisted).
 
     The cache lives at ``<path>.idx.jsonl`` by default, or under ``cache_dir`` (keyed by
     basename) when given. With ``use_cache=False`` no cache is read or written — the index is
-    built fresh in memory every run."""
+    built fresh in memory every run.
+
+    ``on_progress(done, total)`` tracks the byte-level scan; ``on_decode_progress(done, total)``
+    tracks the (much longer, frame-counted) ffmpeg decode pass — kept separate so a caller can label
+    the two phases distinctly."""
     ip = index_path(path, cache_dir)
     fp = fingerprint(path)
     if use_cache and not force and os.path.exists(ip):
@@ -153,7 +157,7 @@ def ensure_index(path, decode=False, force=False, cache_dir=None, use_cache=True
         if idx.fingerprint == fp and idx.version == INDEX_VERSION:
             note = "cached"
             if decode and not idx.decoded:
-                _decode(idx, path)
+                _decode(idx, path, on_progress=on_decode_progress)
                 save_index(idx, ip)
                 note = "cached + decode"
             idx.src_path = os.path.abspath(path)
@@ -167,7 +171,7 @@ def ensure_index(path, decode=False, force=False, cache_dir=None, use_cache=True
         return None
     idx.fingerprint = fp
     if decode:
-        _decode(idx, path)
+        _decode(idx, path, on_progress=on_decode_progress)
     if use_cache:
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
@@ -267,12 +271,13 @@ def align(sources):
 
 
 def analyze(paths, decode=False, force=False, cache_dir=None, use_cache=True,
-            on_progress=None, on_file=None):
+            on_progress=None, on_file=None, on_decode_progress=None):
     """Ensure every input's index (cached/idempotent), then align. Returns an in-memory Report."""
     sources = []
     for p in paths:
         idx = ensure_index(p, decode=decode, force=force, cache_dir=cache_dir,
-                           use_cache=use_cache, on_progress=on_progress, on_file=on_file)
+                           use_cache=use_cache, on_progress=on_progress, on_file=on_file,
+                           on_decode_progress=on_decode_progress)
         if idx is not None:
             sources.append(idx)
     chain, shifts, gaps = align(sources)
